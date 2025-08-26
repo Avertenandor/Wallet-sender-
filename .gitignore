@@ -1,0 +1,36 @@
+# OS/IDE
+.DS_Store
+Thumbs.db
+.vscode/
+__pycache__/
+*.pyc
+
+# Secrets & keys
+*.key
+*.pem
+*.crt
+*.p12
+config.json
+
+# Databases & state
+*.sqlite
+*.db
+history.sqlite
+walletsender.db
+wallet_sender.db
+backup_store/
+logs/
+архив/
+отчеты/
+
+# Exports
+export-*.csv
+*.csv
+
+# Tests & coverage
+.coverage
+htmlcov/
+
+# Env
+.env
+.env.*

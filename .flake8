@@ -1,0 +1,17 @@
+[flake8]
+# Игнорируем ВСЕ ошибки
+ignore = E,W,F,C,N
+# Максимальная длина строки
+max-line-length = 200
+# Исключаем файлы
+exclude = 
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    .mypy_cache,
+    .pytest_cache,
+    *.pyc,
+    *.pyo
+# Отключаем сложность
+max-complexity = 999
