@@ -1,36 +1,68 @@
-# OS/IDE
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/*.log
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Configuration (sensitive data)
+config.key
+*.key
+.env
+
+# OS
 .DS_Store
 Thumbs.db
-.vscode/
-__pycache__/
-*.pyc
 
-# Secrets & keys
-*.key
-*.pem
-*.crt
-*.p12
-config.json
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
 
-# Databases & state
-*.sqlite
-*.db
-history.sqlite
-walletsender.db
-wallet_sender.db
-backup_store/
-logs/
-архив/
-отчеты/
+# PyQt
+*.ui
+*.qrc
 
-# Exports
-export-*.csv
-*.csv
+# Web3 cache
+.web3/
 
-# Tests & coverage
-.coverage
-htmlcov/
-
-# Env
-.env
-.env.*
+# Backup files
+backup_*.py
+*_backup.py

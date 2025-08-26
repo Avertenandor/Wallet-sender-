@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 WalletSender.py — Расширенный скрипт для анализа токенов BSC и распределения вознаграждений с GUI.
@@ -11,7 +11,7 @@ WalletSender.py — Расширенный скрипт для анализа т
 - #MCP:RPC         - RPC пул соединений (строки 250-350)
 - #MCP:CACHE       - Система кэширования (строки 350-380)
 - #MCP:DATABASE    - SQLite операции (строки 380-700)
-- #MCP:API         - Etherscan API интеграция для BSC (строки 700-900)
+- #MCP:API         - BscScan API интеграция (строки 700-900)
 - #MCP:GUI         - PyQt5 интерфейс (строки 863-4735)
 - #MCP:MAIN        - Точка входа (строки 4730-4735)
 
@@ -24,74 +24,37 @@ WalletSender.py — Расширенный скрипт для анализа т
 """
 
 # ======== #MCP:IMPORTS ========
-from typing import Callable, Any, TypeVar, Optional, Dict, List, Union, Tuple, Set, TypedDict
+# Импорт стандартных библиотек для работы с файлами, потоками и т.д.
 import sys
+import os
 import json
 import time
 import threading
 import random
 import sqlite3
-import os  # #MCP:DB_IMPORT
-import math
-from decimal import Decimal
-try:
-    from web3 import Web3, HTTPProvider  # type: ignore
-    WEB3_AVAILABLE = True
-    try:
-        from eth_account import Account  # type: ignore
-    except Exception:
-        Account = None  # type: ignore
-        logger.warning("eth_account не установлен – операции с подписями могут не работать")
-except Exception:
-    WEB3_AVAILABLE = False
-    class Web3:  # type: ignore
-        @staticmethod
-        def is_address(a):
-            return isinstance(a, str) and a.startswith('0x') and len(a) == 42
-        @staticmethod
-        def to_checksum_address(a):
-            return a
-    class HTTPProvider:  # type: ignore
-        def __init__(self, *args, **kwargs):
-            pass
-    logger.warning("Web3 не установлен – блокчейн функции ограничены")
-from pathlib import Path
 import functools
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from collections import deque
 
 # Импорт внешних библиотек для работы с API, криптографией и GUI
 import requests
+from mnemonic import Mnemonic
 from cryptography.fernet import Fernet
 from PyQt5 import QtWidgets, QtCore, QtGui
 import qdarkstyle
 from eth_utils.exceptions import ValidationError
-
-# Константы Qt для обхода проблем с типизацией
-BOTTOM_DOCK_WIDGET_AREA = 8  # QtCore.Qt.BottomDockWidgetArea
-STRETCH_MODE = QtWidgets.QHeaderView.ResizeMode(0)  # QtWidgets.QHeaderView.Stretch
-INTERACTIVE_MODE = QtWidgets.QHeaderView.ResizeMode(1)  # QtWidgets.QHeaderView.Interactive  
-SELECT_ROWS = QtWidgets.QAbstractItemView.SelectionBehavior(1)  # QtWidgets.QTableView.SelectRows
-CUSTOM_CONTEXT_MENU = QtCore.Qt.ContextMenuPolicy(3)  # QtCore.Qt.CustomContextMenu
-USER_ROLE = QtCore.Qt.ItemDataRole(256)  # QtCore.Qt.UserRole
-ITEM_IS_EDITABLE = QtCore.Qt.ItemFlag(2)  # QtCore.Qt.ItemIsEditable
-# Добавленные константы для QMessageBox
-QMSGBOX_YES = 0x00004000  # QtWidgets.QMessageBox.Yes
-QMSGBOX_NO = 0x00010000  # QtWidgets.QMessageBox.No
-# Константа для Qt.QueuedConnection
-QUEUED_CONNECTION = 2  # QtCore.Qt.QueuedConnection
+import csv  # Для работы с CSV файлами
 
 # Совместимость с разными версиями Web3.py
 try:
-    from web3.middleware import geth_poa_middleware  # type: ignore
+    from web3.middleware import geth_poa_middleware
 except ImportError:
     try:
         from web3.middleware.geth_poa import geth_poa_middleware  # type: ignore
     except ImportError:
         # Для самых новых версий Web3.py
-        from web3.middleware import ExtraDataToPOAMiddleware as geth_poa_middleware  # type: ignore
+        from web3.middleware import ExtraDataToPOAMiddleware as geth_poa_middleware
 
 # Настройка логирования для отслеживания работы программы
 LOG_DIR = Path("logs")
@@ -100,116 +63,369 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_DIR / f"wallet_sender_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log", encoding='utf-8'),
+        logging.FileHandler(LOG_DIR / f"wallet_sender_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("WalletSender")
 
-# --- Унифицированная отправка raw транзакций (перенесено из бэкапа) ---
-def send_raw_tx(w3, raw_tx_bytes):
-    """Отправка raw-транзакции с fallback для разных версий web3.
-    Args:
-        w3: инстанс Web3
-        raw_tx_bytes: подписанные байты транзакции
-    Returns:
-        HexBytes хеш транзакции
-    """
+# Импорт для работы с Excel файлами
+try:
+    import openpyxl
+    excel_enabled = True
+except ImportError:
+    logger.warning("openpyxl не установлен - импорт из Excel будет недоступен")
+    excel_enabled = False
+
+# Попытка импортировать web3 и eth_account для работы с блокчейном
+blockchain_enabled = True
+try:
+    from web3 import Web3, HTTPProvider, middleware
+    # Совместимость с разными версиями Web3.py для газовых стратегий
     try:
-        return w3.eth.send_raw_transaction(raw_tx_bytes)
-    except AttributeError:
-        # fallback на альтернативное имя метода (историческая совместимость)
-        return getattr(w3.eth, 'send_rawTransaction')(raw_tx_bytes)
+        from web3.gas_strategies.time_based import medium_gas_price_strategy
+    except ImportError:
+        try:
+            from web3.gas_strategies.rpc import rpc_gas_price_strategy as medium_gas_price_strategy
+        except ImportError:
+            medium_gas_price_strategy = None
+            logger.warning("Не найдена стратегия цены газа, будет использована базовая")
+    
+    # geth_poa_middleware уже импортирован выше с проверкой совместимости
+    from eth_account import Account
+    Account.enable_unaudited_hdwallet_features()
+except ImportError as e:
+    logger.warning(f"web3 или eth_account не установлены—функции блокчейна отключены. Ошибка: {e}")
+    blockchain_enabled = False
+    medium_gas_price_strategy = None
 
-# ======== #MCP:CONFIG ========
-
-# ======== #MCP:DATABASE ========
-# Константы для базы данных
-DB_PATH = Path("wallet_sender.db")
-REWARDS_CONFIG_DIR = Path("rewards_configs")
+# ======== #MCP:CONSTANTS ========
+# Список RPC-узлов для подключения к блокчейну BSC
+RPC_NODES = [
+    "https://bsc-dataseed1.binance.org/",
+    "https://bsc-dataseed.nariox.org/",
+    "https://bsc-dataseed.defibit.io/",
+    "https://bsc.publicnode.com"
+]
+BSCSCAN_URL   = "https://api.bscscan.com/api"
+BSCSCAN_KEY   = "ARA9FYMNCIZHTB2PPBSWF686GID9F99P41"  # SECURITY:MCP - Лучше хранить в переменных окружения
+PLEX_CONTRACT = "0xdf179b6cadbc61ffd86a3d2e55f6d6e083ade6c1"  # Адрес контракта токена PLEX ONE
+USDT_CONTRACT = "0x55d398326f99059ff775485246999027b3197955"  # Адрес контракта USDT на BSC
+CONFIG_FILE   = "config.json"  # Файл для хранения конфигурации
+DB_FILE       = "history.sqlite"  # База данных для истории транзакций
+CACHE_TTL     = timedelta(minutes=10)  # Время жизни кэша
+REWARDS_CONFIG_DIR = Path("rewards_configs")  # Директория для сохранения конфигураций наград
 REWARDS_CONFIG_DIR.mkdir(exist_ok=True)
 
-# Константы токенов (если не определены выше)
-if 'PLEX_CONTRACT' not in globals():
-    PLEX_CONTRACT = '0x07958Be5D12365db62A6535D0a88105944a2E81E'
-if 'USDT_CONTRACT' not in globals():
-    USDT_CONTRACT = '0x55d398326f99059fF775485246999027B3197955'
-
-# ERC20 ABI минимальный
+# Минимальный ABI для взаимодействия с токенами стандарта ERC20
 ERC20_ABI = [
-    {"constant":True,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"},
-    {"constant":True,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"},
-    {"constant":False,"inputs":[{"name":"_to","type":"address"},{"name":"_value","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"type":"function"}
+    { "constant": False, "inputs":[{"name":"_to","type":"address"},{"name":"_value","type":"uint256"}],
+      "name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function" },  # Функция перевода токенов
+    { "constant": True, "inputs":[{"name":"_owner","type":"address"}],
+      "name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function" },  # Проверка баланса
+    { "constant": True, "inputs":[],
+      "name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function" },  # Количество десятичных знаков
+    { "constant": True, "inputs":[],
+      "name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function" }  # Символ токена
 ]
 
+# ======== #MCP:UTILS ========
+def retry(times=3, delay=0.5):
+    """Декоратор: повторять вызов при исключении.
+    
+    TODO:MCP - Добавить экспоненциальный backoff
+    OPTIMIZE:MCP - Улучшить обработку различных типов исключений
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(times):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    logger.warning(f"Попытка {attempt+1}/{times} не удалась: {e}")
+                    time.sleep(delay * (attempt + 1))  # Увеличение задержки с каждой попыткой
+            logger.error(f"Все {times} попыток не удались. Последняя ошибка: {last_exception}")
+            raise last_exception
+        return wrapper
+    return decorator
+
+# ======== #MCP:CONFIG ========
+class Config:
+    """Шифрование/хранение приватного ключа и seed-фразы.
+    
+    SECURITY:MCP - Проверить стойкость шифрования
+    REFACTOR:MCP - Добавить валидацию конфигурации
+    DOCS:MCP - Документировать формат конфигурации
+    """
+    def __init__(self):
+        self.config_path = Path(CONFIG_FILE)
+        if self.config_path.exists():
+            try:
+                self.data = json.loads(self.config_path.read_text(encoding='utf-8'))
+            except json.JSONDecodeError:
+                logger.error(f"Неверный JSON в {CONFIG_FILE}, создаю новую конфигурацию")
+                self.data = {}
+        else:
+            self.data = {}
+        
+        # Генерация ключа шифрования, если он отсутствует
+        if 'fernet_key' not in self.data:
+            self.data['fernet_key'] = Fernet.generate_key().decode()
+            self._save()
+        self.fernet = Fernet(self.data['fernet_key'].encode())
+
+    def _save(self):
+        """Сохранение конфигурации в файл"""
+        try:
+            self.config_path.write_text(
+                json.dumps(self.data, ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+            logger.debug("Конфигурация сохранена")
+        except Exception as e:
+            logger.error(f"Не удалось сохранить конфигурацию: {e}")
+
+    def set_key(self, raw):
+        """Сохранение зашифрованного приватного ключа"""
+        self.data['pk'] = self.fernet.encrypt(raw.encode()).decode()
+        self._save()
+
+    def get_key(self):
+        """Получение расшифрованного приватного ключа"""
+        return (self.fernet.decrypt(self.data['pk'].encode()).decode()
+                if 'pk' in self.data else None)
+
+    def set_mnemonic(self, m):
+        """Сохранение зашифрованной мнемонической фразы"""
+        self.data['mn'] = self.fernet.encrypt(m.encode()).decode()
+        self._save()
+
+    def get_mnemonic(self):
+        """Получение расшифрованной мнемонической фразы"""
+        return (self.fernet.decrypt(self.data['mn'].encode()).decode()
+                if 'mn' in self.data else None)
+    
+    def set_gas_price(self, price_gwei):
+        """Сохранение предпочтительной цены газа в Gwei"""
+        self.data['gas_price'] = price_gwei
+        self._save()
+    
+    def get_gas_price(self):
+        """Получение предпочтительной цены газа, по умолчанию 5 Gwei"""
+        return self.data.get('gas_price', 5)
+        
+    def get_repeat_count(self):
+        """Получение количества повторений серии отправок"""
+        return self.data.get('repeat_count', 1)
+        
+    def set_repeat_count(self, count):
+        """Сохранение количества повторений серии отправок"""
+        self.data['repeat_count'] = count
+        self._save()
+        
+    def get_reward_per_tx(self):
+        """Получение режима награждения за каждую транзакцию"""
+        return self.data.get('reward_per_tx', False)
+        
+    def set_reward_per_tx(self, value):
+        """Сохранение режима награждения за каждую транзакцию"""
+        self.data['reward_per_tx'] = value
+        self._save()
+
+# ======== #MCP:RPC ========
+class RPCPool:
+    """Отказоустойчивый Web3-подключатель.
+    
+    OPTIMIZE:MCP - Добавить метрики производительности узлов
+    REFACTOR:MCP - Выделить в отдельный модуль
+    TODO:MCP - Добавить автоматическое обновление списка узлов
+    """
+    def __init__(self, nodes):
+        self.nodes = nodes
+        self.idx = 0
+        self.node_health = {node: True for node in nodes}  # Статус здоровья узла
+        self.last_check = {node: datetime.min for node in nodes}  # Время последней проверки
+        self.check_interval = timedelta(minutes=5)  # Интервал между проверками
+
+    def _check_node(self, node_url):
+        """Проверка, работает ли узел и отвечает ли он"""
+        try:
+            w3 = Web3(HTTPProvider(node_url, request_kwargs={'timeout': 10}))
+            if w3.is_connected():
+                block = w3.eth.block_number
+                if block > 0:
+                    self.node_health[node_url] = True
+                    self.last_check[node_url] = datetime.now()
+                    logger.debug(f"Узел {node_url} работает (блок {block})")
+                    return True
+        except Exception as e:
+            logger.warning(f"Проверка узла {node_url} не удалась: {e}")
+            self.node_health[node_url] = False
+            self.last_check[node_url] = datetime.now()
+        return False
+
+    def get_healthy_node(self):
+        """Возвращает URL работающего узла"""
+        # Сначала проверяем текущий узел, если он был недавно проверен
+        current = self.nodes[self.idx]
+        if (self.node_health[current] and 
+            datetime.now() - self.last_check[current] < self.check_interval):
+            return current
+            
+        # В противном случае ищем любой работающий узел
+        for _ in range(len(self.nodes)):
+            self.idx = (self.idx + 1) % len(self.nodes)
+            node = self.nodes[self.idx]
+            if self._check_node(node):
+                return node
+                
+        # Если все узлы не работают, пробуем текущий как последнее средство
+        return self.nodes[self.idx]
+
+    def web3(self):
+        """Получение экземпляра web3, подключенного к работающему узлу"""
+        if not blockchain_enabled:
+            raise RuntimeError("Функции блокчейна отключены")
+        
+        node_url = self.get_healthy_node()
+        
+        # Создаем Web3 с уже внедренным geth_poa_middleware
+        w3 = Web3(HTTPProvider(node_url, request_kwargs={'timeout': 10}))
+        
+        # Важно указать явное внедрение middleware для POA сетей
+        # Используем уже импортированный geth_poa_middleware
+        try:
+            w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        except (AttributeError, TypeError):
+            # Для новых версий Web3.py
+            try:
+                w3.middleware_onion.add(geth_poa_middleware)
+            except Exception as e:
+                logger.warning(f"Не удалось добавить POA middleware: {e}")
+        
+        # Добавление middleware для стратегии цены газа
+        if medium_gas_price_strategy:
+            try:
+                w3.eth.set_gas_price_strategy(medium_gas_price_strategy)
+            except Exception as e:
+                logger.warning(f"Не удалось установить стратегию цены газа: {e}")
+        
+        if not w3.is_connected():
+            raise ConnectionError(f"Не удалось подключиться к узлу: {node_url}")
+            
+        logger.debug(f"Подключено к {node_url}")
+        return w3
+# ======== #MCP:CACHE ========
+class SimpleCache:
+    """Кэширование результатов с TTL.
+    
+    OPTIMIZE:MCP - Добавить LRU стратегию
+    REFACTOR:MCP - Использовать готовую библиотеку кэширования
+    TODO:MCP - Добавить персистентное кэширование
+    """
+    def __init__(self):
+        self.store = {}  # Хранилище кэша
+
+    def get(self, key):
+        """Получение значения из кэша, если оно не устарело"""
+        entry = self.store.get(key)
+        if entry and datetime.now() - entry[1] < CACHE_TTL:
+            return entry[0]
+        return None
+
+    def set(self, key, val):
+        """Сохранение значения в кэш с текущей временной меткой"""
+        self.store[key] = (val, datetime.now())
+        
+    def clear(self):
+        """Очистка всех кэшированных данных"""
+        old_count = len(self.store)
+        self.store = {}
+        return old_count
+
+cache = SimpleCache()
+
+# ======== #MCP:DATABASE ========
 def get_db_connection():
-    """Получение соединения с базой данных"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    """Получение соединения с базой данных SQLite с нужными настройками
+    
+    OPTIMIZE:MCP - Добавить пул соединений
+    SECURITY:MCP - Проверить SQL injection защиту
+    """
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row  # Для именованных столбцов
     return conn
 
 def init_db():
-    """Инициализация базы данных и создание таблиц"""
+    """Инициализация базы данных - создание таблиц, если они не существуют
+    
+    REFACTOR:MCP - Использовать миграции для изменения схемы
+    DOCS:MCP - Документировать схему базы данных
+    """
     conn = get_db_connection()
     cur = conn.cursor()
-    
-    # Создание таблицы истории
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS history (
-            id INTEGER PRIMARY KEY,
-            ts TEXT,
-            token TEXT,
+        CREATE TABLE IF NOT EXISTS history(
+            id      INTEGER PRIMARY KEY,
+            ts      TEXT,
+            token   TEXT,
             to_addr TEXT,
-            amount REAL,
-            tx TEXT,
-            status TEXT
+            amount  REAL,
+            tx      TEXT,
+            status  TEXT DEFAULT 'pending'
         )
     """)
+    # Добавление столбца status, если его нет
+    try:
+        cur.execute("ALTER TABLE history ADD COLUMN status TEXT DEFAULT 'pending'")
+    except sqlite3.OperationalError:
+        pass  # Столбец уже существует
     
-    # Создание таблицы найденных транзакций
+    # Создание таблицы для сохранения найденных транзакций
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS found_transactions (
-            id INTEGER PRIMARY KEY,
-            ts TEXT,
-            tx_hash TEXT,
-            from_addr TEXT,
-            to_addr TEXT,
-            token_addr TEXT,
-            token_name TEXT,
-            amount REAL,
-            block INTEGER,
-            block_time TEXT,
+        CREATE TABLE IF NOT EXISTS found_transactions(
+            id          INTEGER PRIMARY KEY,
+            ts          TEXT,
+            tx_hash     TEXT,
+            from_addr   TEXT,
+            to_addr     TEXT,
+            token_addr  TEXT,
+            token_name  TEXT,
+            amount      REAL,
+            block       INTEGER,
+            block_time  TEXT,
             search_data TEXT
         )
     """)
     
-    # Создание таблицы транзакций отправителей
+    # Создание таблицы для хранения детальной информации о транзакциях по отправителям
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS sender_transactions (
-            id INTEGER PRIMARY KEY,
-            search_time TEXT,
-            sender_addr TEXT,
-            tx_hash TEXT,
+        CREATE TABLE IF NOT EXISTS sender_transactions(
+            id           INTEGER PRIMARY KEY,
+            search_time  TEXT,
+            sender_addr  TEXT,
+            tx_hash      TEXT,
             tx_timestamp TEXT,
-            token_name TEXT,
-            amount REAL,
-            block INTEGER,
-            rewarded INTEGER DEFAULT 0
+            token_name   TEXT,
+            amount       REAL,
+            block        INTEGER,
+            rewarded     INTEGER DEFAULT 0
         )
     """)
     
-    # Создание таблицы наград
+    # Создание таблицы для хранения наград
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS rewards (
-            id INTEGER PRIMARY KEY,
-            address TEXT,
-            plex_amount REAL,
-            usdt_amount REAL,
-            tx_hash TEXT,
-            created_at TEXT,
-            sent INTEGER DEFAULT 0
+        CREATE TABLE IF NOT EXISTS rewards(
+            id           INTEGER PRIMARY KEY,
+            address      TEXT,
+            plex_amount  REAL,
+            usdt_amount  REAL,
+            tx_hash      TEXT,
+            created_at   TEXT,
+            sent         INTEGER DEFAULT 0
         )
     """)
     
@@ -244,233 +460,11 @@ def init_db():
             FOREIGN KEY (distribution_id) REFERENCES mass_distributions(id)
         )
     """)
-
-    # Миграции: добавление поля slot, если отсутствует
-    try:
-        cur.execute("ALTER TABLE mass_distributions ADD COLUMN slot TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE mass_distribution_items ADD COLUMN slot TEXT")
-    except sqlite3.OperationalError:
-        pass
     
     conn.commit()
     conn.close()
 
-# Дополнительные классы и утилиты
-class Config:
-    """Класс для управления конфигурацией приложения"""
-    def __init__(self):
-        self.data = {}
-        self.config_file = Path("config.json")
-        self.load()
-    
-    def load(self):
-        if self.config_file.exists():
-            try:
-                with open(self.config_file, 'r') as f:
-                    self.data = json.load(f)
-            except Exception:
-                self.data = {}
-    
-    def save(self):
-        with open(self.config_file, 'w') as f:
-            json.dump(self.data, f, indent=2)
-    
-    def get_key(self, slot=None):
-        if slot:
-            return self.data.get(f'private_key_{slot}')
-        return self.data.get('private_key')
-    
-    def set_key(self, key, slot=None):
-        if slot:
-            self.data[f'private_key_{slot}'] = key
-        else:
-            self.data['private_key'] = key
-        self.save()
-    
-    def get_mnemonic(self, slot=None):
-        if slot:
-            return self.data.get(f'mnemonic_{slot}')
-        return self.data.get('mnemonic')
-    
-    def set_mnemonic(self, mnemonic, slot=None):
-        if slot:
-            self.data[f'mnemonic_{slot}'] = mnemonic
-        else:
-            self.data['mnemonic'] = mnemonic
-        self.save()
-    
-    def get_gas_price(self):
-        return self.data.get('gas_price', 5.0)
-    
-    def get_reward_per_tx(self):
-        return self.data.get('reward_per_tx', False)
-    
-    def set_reward_per_tx(self, value):
-        self.data['reward_per_tx'] = value
-        self.save()
-
-# RPC Pool для работы с блокчейном
-RPC_NODES = [
-    "https://bsc-dataseed.binance.org/",
-    "https://bsc-dataseed1.defibit.io/",
-    "https://bsc-dataseed1.ninicoin.io/"
-]
-
-class RPCPool:
-    """Пул RPC соединений"""
-    def __init__(self, nodes):
-        self.nodes = nodes
-        self.current_index = 0
-    
-    def web3(self):
-        if not WEB3_AVAILABLE:
-            raise RuntimeError("Web3 не установлен")
-        node = self.nodes[self.current_index]
-        self.current_index = (self.current_index + 1) % len(self.nodes)
-        w3 = Web3(HTTPProvider(node))
-        if hasattr(w3, 'middleware_onion'):
-            w3.middleware_onion.inject(geth_poa_middleware, layer=0)
-        return w3
-
-# Глобальный флаг доступности блокчейна
-blockchain_enabled = WEB3_AVAILABLE
-
-# API ключи для BscScan с ротацией
-class APIKeyRotator:
-    """Ротатор API ключей для распределения нагрузки"""
-    def __init__(self, keys):
-        self.keys = keys
-        self.current_index = 0
-        self.failed_keys = set()
-        self.request_counts = {k: 0 for k in keys}
-        self.success_counts = {k: 0 for k in keys}
-        self.last_used = {k: None for k in keys}
-    
-    def get_current_key(self):
-        """Получить текущий активный ключ"""
-        available_keys = [k for k in self.keys if k not in self.failed_keys]
-        if not available_keys:
-            # Если все ключи заблокированы, сбрасываем блокировки
-            self.failed_keys.clear()
-            available_keys = self.keys
-        
-        # Выбираем ключ с наименьшим количеством запросов
-        key = min(available_keys, key=lambda k: self.request_counts[k])
-        self.request_counts[key] += 1
-        self.last_used[key] = datetime.now()
-        return key
-    
-    def mark_key_failed(self, key):
-        """Пометить ключ как проблемный"""
-        if key in self.keys:
-            self.failed_keys.add(key)
-            logger.warning(f"API ключ помечен как проблемный: {key[:10]}...")
-    
-    def mark_key_success(self, key):
-        """Пометить ключ как успешный"""
-        if key in self.keys:
-            self.success_counts[key] += 1
-            # Снимаем блокировку при успешном запросе
-            if key in self.failed_keys:
-                self.failed_keys.discard(key)
-    
-    def get_statistics(self):
-        """Получить статистику использования ключей"""
-        stats = {
-            'total_keys': len(self.keys),
-            'active_keys': len(self.keys) - len(self.failed_keys),
-            'failed_keys': len(self.failed_keys),
-            'total_requests': sum(self.request_counts.values()),
-            'current_key': self.keys[self.current_index][:10] + '...',
-            'last_rotation': max([t for t in self.last_used.values() if t], default=None),
-            'key_details': {}
-        }
-        
-        for key in self.keys:
-            key_masked = key[:10] + '...'
-            stats['key_details'][key_masked] = {
-                'status': 'FAILED' if key in self.failed_keys else 'ACTIVE',
-                'requests': self.request_counts[key],
-                'successes': self.success_counts[key],
-                'success_rate': (self.success_counts[key] / max(self.request_counts[key], 1)) * 100,
-                'last_used': self.last_used[key].strftime('%H:%M:%S') if self.last_used[key] else None
-            }
-        
-        return stats
-
-# Инициализация ротатора API ключей
-api_key_rotator = APIKeyRotator([
-    "RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1",
-    "U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ", 
-    "RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH"
-])
-
-# Простой кэш для API запросов
-class SimpleCache:
-    def __init__(self, ttl_seconds=300):
-        self.cache = {}
-        self.ttl = ttl_seconds
-    
-    def get(self, key):
-        if key in self.cache:
-            data, timestamp = self.cache[key]
-            if time.time() - timestamp < self.ttl:
-                return data
-            del self.cache[key]
-        return None
-    
-    def set(self, key, value):
-        self.cache[key] = (value, time.time())
-
-cache = SimpleCache(ttl_seconds=300)
-
-# TypedDict для типизации ответов API
-class BSCScanAPIResponse(TypedDict, total=False):
-    status: str
-    message: str  
-    result: Union[List[Dict[str, Any]], str]
-
-# Декоратор для повторных попыток
-def retry(times=3, delay=1):
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            for i in range(times):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    if i == times - 1:
-                        raise
-                    logger.warning(f"Попытка {i+1}/{times} не удалась: {e}")
-                    time.sleep(delay)
-            return None
-        return wrapper
-    return decorator
-
-class LogHandler(logging.Handler):
-    """Пользовательский обработчик логов: отправляет сообщения в QTextEdit через сигнал."""
-    def __init__(self, text_widget: Any):
-        super().__init__()
-        self.text_widget = text_widget
-        self._proxy = _QtSignalProxy()
-        if hasattr(self.text_widget, 'append'):
-            self._proxy.append_text.connect(self.text_widget.append)
-        self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            self._proxy.append_text.emit(msg)
-        except Exception:
-            # Никогда не роняем приложение из-за логов
-            pass
-
-# ======== #MCP:GUI ========
-
-def add_history(token: str, to_addr: str, amt: float, tx_hash: str) -> Optional[int]:
+def add_history(token, to_addr, amt, tx_hash):
     """Добавление записи в историю транзакций"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -484,7 +478,7 @@ def add_history(token: str, to_addr: str, amt: float, tx_hash: str) -> Optional[
     logger.info(f"Транзакция добавлена в историю: {tx_hash}")
     return row_id
 
-def update_tx_status(tx_hash: str, status: str) -> int:
+def update_tx_status(tx_hash, status):
     """Обновление статуса транзакции в базе данных"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -513,7 +507,7 @@ def copy_all_transactions_hashes():
     conn.close()
     return '\n'.join([row['tx'] for row in rows])
 
-def add_found_transaction(tx_data: Dict[str, Any], search_info: Dict[str, Any]) -> Optional[int]:
+def add_found_transaction(tx_data, search_info):
     """Добавление найденной транзакции в базу данных"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -537,7 +531,7 @@ def add_found_transaction(tx_data: Dict[str, Any], search_info: Dict[str, Any]) 
     conn.close()
     return row_id
 
-def add_sender_transaction(sender_addr: str, tx_info: Dict[str, Any], search_time: str) -> Optional[int]:
+def add_sender_transaction(sender_addr, tx_info, search_time):
     """Добавление информации о транзакции отправителя в базу данных"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -566,7 +560,7 @@ def add_sender_transaction(sender_addr: str, tx_info: Dict[str, Any], search_tim
     conn.close()
     return row_id
 
-def add_reward(address: str, plex_amount: float, usdt_amount: float, tx_hash: Optional[str] = None) -> Optional[int]:
+def add_reward(address, plex_amount, usdt_amount, tx_hash=None):
     """Добавление награды в базу данных"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -599,7 +593,7 @@ def get_rewards():
     conn.close()
     return rows
 
-def mark_transaction_rewarded(tx_hash: str) -> int:
+def mark_transaction_rewarded(tx_hash):
     """Отметка транзакции как награжденной"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -609,7 +603,7 @@ def mark_transaction_rewarded(tx_hash: str) -> int:
     conn.close()
     return affected_rows
 
-def get_unrewarded_transactions(sender_addr: Optional[str] = None) -> List[sqlite3.Row]:
+def get_unrewarded_transactions(sender_addr=None):
     """Получение ненагражденных транзакций из базы данных"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -634,7 +628,7 @@ def get_unrewarded_transactions(sender_addr: Optional[str] = None) -> List[sqlit
     return rows
 
 
-def get_transactions_by_sender(sender_addr: str) -> List[sqlite3.Row]:
+def get_transactions_by_sender(sender_addr):
     """Получение всех транзакций отправителя"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -648,12 +642,12 @@ def get_transactions_by_sender(sender_addr: str) -> List[sqlite3.Row]:
     conn.close()
     return rows
 
-def fetch_found_transactions(limit: int = 1000) -> List[sqlite3.Row]:
+def fetch_found_transactions(limit=1000):
     """Получение найденных транзакций из базы данных"""
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT ts, tx_hash, from_addr, to_addr, token_addr, token_name, amount, block, block_time, search_data
+        SELECT ts, tx_hash, from_addr, to_addr, token_name, amount, block_time
         FROM found_transactions
         ORDER BY id DESC
         LIMIT ?
@@ -662,7 +656,7 @@ def fetch_found_transactions(limit: int = 1000) -> List[sqlite3.Row]:
     conn.close()
     return rows
 
-def get_sender_transaction_counts() -> List[sqlite3.Row]:
+def get_sender_transaction_counts():
     """Получение количества транзакций по отправителям"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -677,7 +671,7 @@ def get_sender_transaction_counts() -> List[sqlite3.Row]:
     conn.close()
     return rows
 
-def clear_found_transactions() -> int:
+def clear_found_transactions():
     """Очистка таблицы найденных транзакций"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -687,7 +681,7 @@ def clear_found_transactions() -> int:
     conn.close()
     return count
 
-def clear_sender_transactions() -> int:
+def clear_sender_transactions():
     """Очистка таблицы транзакций отправителей"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -698,9 +692,9 @@ def clear_sender_transactions() -> int:
     return count
 
 # ======== Управление конфигурацией наград ========
-def save_rewards_config(name: str, addresses: List[str], plex_amounts: Dict[int, float], usdt_amounts: Dict[int, float]) -> bool:
+def save_rewards_config(name, addresses, plex_amounts, usdt_amounts):
     """Сохранение конфигурации наград в файл"""
-    config: List[Dict[str, Union[str, float]]] = []
+    config = []
     for i in range(len(addresses)):
         config.append({
             'address': addresses[i],
@@ -717,7 +711,7 @@ def save_rewards_config(name: str, addresses: List[str], plex_amounts: Dict[int,
         logger.error(f"Ошибка при сохранении конфигурации наград: {e}")
         return False
 
-def load_rewards_config(name: str) -> Optional[List[Dict[str, Any]]]:
+def load_rewards_config(name):
     """Загрузка конфигурации наград из файла"""
     file_path = REWARDS_CONFIG_DIR / f"{name}.json"
     try:
@@ -727,7 +721,7 @@ def load_rewards_config(name: str) -> Optional[List[Dict[str, Any]]]:
         logger.error(f"Ошибка при загрузке конфигурации наград: {e}")
         return None
 
-def get_rewards_configs() -> List[str]:
+def get_rewards_configs():
     """Получение списка доступных конфигураций наград"""
     try:
         return [f.stem for f in REWARDS_CONFIG_DIR.glob('*.json')]
@@ -736,12 +730,12 @@ def get_rewards_configs() -> List[str]:
         return []
 
 # ======== Управление массовыми рассылками ========
-def add_mass_distribution(name: str, token_address: str, token_symbol: str, amount_per_tx: float, total_addresses: int, total_cycles: int, interval_seconds: int, slot: Optional[str] = None) -> int:
+def add_mass_distribution(name, token_address, token_symbol, amount_per_tx, total_addresses, total_cycles, interval_seconds):
     """Добавление новой массовой рассылки в базу данных"""
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO mass_distributions (id,created_at,name,token_address,token_symbol,amount_per_tx,total_addresses,total_cycles,interval_seconds,status,completed_at,slot) VALUES(NULL,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO mass_distributions VALUES(NULL,?,?,?,?,?,?,?,?,?,?)",
         (
             datetime.now().isoformat(),
             name,
@@ -752,26 +746,21 @@ def add_mass_distribution(name: str, token_address: str, token_symbol: str, amou
             total_cycles,
             interval_seconds,
             'active',
-            None,
-            slot
+            None
         )
     )
     conn.commit()
     distribution_id = cur.lastrowid
     conn.close()
-    
-    if distribution_id is None:
-        raise RuntimeError("Не удалось получить ID созданной рассылки")
-    
     logger.info(f"Создана массовая рассылка #{distribution_id}: {name}")
     return distribution_id
 
-def add_mass_distribution_item(distribution_id: int, address: str, cycle: int, tx_hash: str, status: str, error_message: Optional[str] = None, slot: Optional[str] = None) -> Optional[int]:
+def add_mass_distribution_item(distribution_id, address, cycle, tx_hash, status, error_message=None):
     """Добавление элемента массовой рассылки"""
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO mass_distribution_items (id,distribution_id,address,cycle,tx_hash,status,error_message,sent_at,slot) VALUES(NULL,?,?,?,?,?,?,?,?)",
+        "INSERT INTO mass_distribution_items VALUES(NULL,?,?,?,?,?,?,?)",
         (
             distribution_id,
             address,
@@ -779,8 +768,7 @@ def add_mass_distribution_item(distribution_id: int, address: str, cycle: int, t
             tx_hash,
             status,
             error_message,
-            datetime.now().isoformat() if status in ['success', 'error'] else None,
-            slot
+            datetime.now().isoformat() if status in ['success', 'error'] else None
         )
     )
     conn.commit()
@@ -788,7 +776,7 @@ def add_mass_distribution_item(distribution_id: int, address: str, cycle: int, t
     conn.close()
     return row_id
 
-def update_mass_distribution_status(distribution_id: int, status: str) -> None:
+def update_mass_distribution_status(distribution_id, status):
     """Обновление статуса массовой рассылки"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -803,7 +791,7 @@ def update_mass_distribution_status(distribution_id: int, status: str) -> None:
     conn.close()
     logger.info(f"Статус рассылки #{distribution_id} обновлен на {status}")
 
-def get_mass_distributions(limit: int = 100) -> List[sqlite3.Row]:
+def get_mass_distributions(limit=100):
     """Получение списка массовых рассылок"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -818,7 +806,7 @@ def get_mass_distributions(limit: int = 100) -> List[sqlite3.Row]:
     conn.close()
     return rows
 
-def get_mass_distribution_items(distribution_id: int) -> List[sqlite3.Row]:
+def get_mass_distribution_items(distribution_id):
     """Получение элементов массовой рассылки"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -832,7 +820,7 @@ def get_mass_distribution_items(distribution_id: int) -> List[sqlite3.Row]:
     conn.close()
     return rows
 
-def get_mass_distribution_statistics(distribution_id: int) -> Dict[str, Any]:
+def get_mass_distribution_statistics(distribution_id):
     """Получение статистики массовой рассылки"""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -860,13 +848,12 @@ def get_mass_distribution_statistics(distribution_id: int) -> Dict[str, Any]:
 
 # ======== #MCP:API ========
 @retry(times=3)
-def bscscan_request(params: Dict[str, Any], api_key: Optional[str] = None) -> BSCScanAPIResponse:
-    """Отправка запроса к API BscScan с поддержкой ротации ключей, кэширования и повторов
+def bscscan_request(params):
+    """Отправка запроса к API BscScan с поддержкой кэширования и повторов
     
     OPTIMIZE:MCP - Добавить rate limiting
     REFACTOR:MCP - Выделить в отдельный API клиент
     SECURITY:MCP - Скрыть API ключ из логов
-    FEATURES:MCP - Автоматическая ротация API ключей при сбоях
     """
     if not blockchain_enabled:
         raise RuntimeError("Блокчейн отключен")
@@ -877,121 +864,31 @@ def bscscan_request(params: Dict[str, Any], api_key: Optional[str] = None) -> BS
         logger.debug(f"Найдено в кэше для запроса BscScan: {params}")
         return cached
     
-    # Подбор ключа: если передан явно — используем его, иначе через ротатор
-    params_with_key = params.copy()
-    if api_key:
-        params_with_key['apikey'] = api_key
-        current_key = api_key
-        use_rotator = False
-    else:
-        current_key = api_key_rotator.get_current_key()
-        params_with_key['apikey'] = current_key
-        use_rotator = True
-    
-    # --- Rate limiting (Free BscScan: ~5 req/sec; делаем мягко 4/сек) ---
-    if not hasattr(bscscan_request, '_req_times'):
-        bscscan_request._req_times = deque(maxlen=10)  # type: ignore[attr-defined]
-    if not hasattr(bscscan_request, '_lock'):
-        bscscan_request._lock = threading.Lock()  # type: ignore[attr-defined]
-
-    with bscscan_request._lock:  # type: ignore[attr-defined]
-        now = time.time()
-        dq = bscscan_request._req_times  # type: ignore[attr-defined]
-        # Удаляем устаревшие записи (>1 сек)
-        while dq and now - dq[0] > 1.0:
-            dq.popleft()
-        # Если достигли лимита (>=4 запросов за последнюю секунду) — ждём
-        while len(dq) >= 4:
-            sleep_for = 1.05 - (now - dq[0])
-            if sleep_for > 0:
-                logger.debug(f"RateLimit: пауза {sleep_for:.3f}s (запросов за последнюю секунду: {len(dq)})")
-                time.sleep(sleep_for)
-            now = time.time()
-            while dq and now - dq[0] > 1.0:
-                dq.popleft()
-        dq.append(time.time())
-
+    params.update({'apikey': BSCSCAN_KEY})
     try:
-        # Базовый URL (если ранее не объявлен как константа)
-        base_url = globals().get('BSCSCAN_URL', 'https://api.bscscan.com/api')
-        response = requests.get(base_url, params=params_with_key, timeout=10)
+        response = requests.get(BSCSCAN_URL, params=params, timeout=10)
         if response.status_code != 200:
             logger.warning(f"Ошибка HTTP в BscScan: {response.status_code}")
-            # Отмечаем ключ как проблемный при HTTP ошибках
-            if use_rotator:
-                api_key_rotator.mark_key_failed(current_key)
             raise Exception(f"Ошибка HTTP {response.status_code}")
             
-        result: BSCScanAPIResponse = response.json()
+        result = response.json()
         
-        # Проверка специфичных ошибок API
-        if isinstance(result, dict) and result.get('message') == 'No transactions found':
-            api_key_rotator.mark_key_success(current_key)
-            return {'status': '1', 'message': 'OK', 'result': []}
+        if result.get('message') == 'No transactions found':
+            return []
+        if result.get('status') != '1':
+            error_msg = result.get('message') or 'Ошибка API BscScan'
+            logger.error(f"Ошибка API BscScan: {error_msg}")
+            raise Exception(error_msg)
             
-        if not isinstance(result, dict) or result.get('status') != '1':
-            # Собираем подробное сообщение из message + result
-            raw_message = result.get('message') if isinstance(result, dict) else None
-            raw_result = result.get('result') if isinstance(result, dict) else None
-            details = ''
-            if isinstance(raw_result, str):
-                details = raw_result
-            elif raw_result is not None:
-                try:
-                    details = json.dumps(raw_result, ensure_ascii=False)
-                except Exception:
-                    details = str(raw_result)
-            error_msg_base = raw_message or 'Ошибка Etherscan API'
-            detailed_msg = f"{error_msg_base}{(': ' + details) if details else ''}"
-            logger.error(f"Ошибка Etherscan API: {detailed_msg}")
-            
-            # Классификация ошибок для корректной реакции выше по стеку
-            low = detailed_msg.lower()
-            rate_limit_keywords = [
-                'rate limit', 'max rate', 'maximum rate', 'too many request', 'too many requests', 'limit reached'
-            ]
-            key_error_keywords = [
-                'invalid api key', 'apikey invalid', 'missing api key', 'apikey missing', 'forbidden', 'access denied', 'ban'
-            ]
-            is_rate_limited = any(k in low for k in rate_limit_keywords)
-            is_key_error = any(k in low for k in key_error_keywords)
-            
-            if is_rate_limited or is_key_error:
-                # Помечаем текущий ключ проблемным и даём шанс ротатору выбрать другой на следующем вызове
-                if use_rotator:
-                    api_key_rotator.mark_key_failed(current_key)
-                if is_rate_limited and 'rate limit' not in low:
-                    # Гарантируем наличие маркера 'rate limit' в Exception, чтобы внешняя логика распознала паузу
-                    detailed_msg += ' (rate limit)'
-            
-            raise Exception(detailed_msg)
-            
-        # Успешный запрос
-        cache.set(cache_key, result)
-        if use_rotator:
-            api_key_rotator.mark_key_success(current_key)
-        
-        return result
-        
+        data = result.get('result', [])
+        cache.set(cache_key, data)
+        return data
     except requests.RequestException as e:
         logger.error(f"Запрос BscScan не удался: {e}")
-        if use_rotator:
-            api_key_rotator.mark_key_failed(current_key)
         raise
 
 # ======== Постраничный анализ ========
-def search_transactions_paginated(
-    wallet_address: str, 
-    token_contract: Optional[str] = None, 
-    exact_amount: Optional[float] = None, 
-    min_amount: Optional[float] = None, 
-    max_amount: Optional[float] = None, 
-    page_size: int = 1000, 
-    max_pages: int = 100, 
-    delay_seconds: int = 1, 
-    stop_flag: Optional[Any] = None, 
-    track_individual_tx: bool = False
-) -> Tuple[List[Dict[str, Any]], Dict[str, int], Optional[Dict[str, List[Dict[str, Any]]]]]:
+def search_transactions_paginated(wallet_address, token_contract=None, exact_amount=None, min_amount=None, max_amount=None, page_size=1000, max_pages=100, delay_seconds=1, stop_flag=None, track_individual_tx=False):
     """
     Постраничный поиск транзакций с указанными параметрами.
     
@@ -1018,7 +915,7 @@ def search_transactions_paginated(
         raise RuntimeError("Блокчейн отключен")
     
     # Подготовка базовых параметров запроса
-    base_params: Dict[str, Any] = {
+    base_params = {
         'module': 'account',
         'action': 'tokentx',
         'address': wallet_address,
@@ -1030,21 +927,17 @@ def search_transactions_paginated(
     if token_contract:
         base_params['contractaddress'] = token_contract
     
-    matching_transactions: List[Dict[str, Any]] = []
-    sender_counter: Dict[str, int] = {}
+    matching_transactions = []
+    sender_counter = {}
     # Словарь для хранения транзакций по отправителям, если нужно детальное отслеживание
-    sender_transactions: Optional[Dict[str, List[Dict[str, Any]]]] = {} if track_individual_tx else None
+    sender_transactions = {} if track_individual_tx else None
     
     page = 1
     has_more_data = True
-    token_decimals: Dict[str, int] = {}  # Кэш для десятичных знаков токенов
+    token_decimals = {}  # Кэш для десятичных знаков токенов
     
     logger.info(f"Начинаем постраничный поиск транзакций для адреса {wallet_address}")
     
-    # Адаптивная задержка для снижения риска лимита: стартовая = delay_seconds
-    adaptive_delay = max(delay_seconds, 0.25)
-    consecutive_rate_limits = 0
-
     while has_more_data and page <= max_pages:
         # Проверка флага остановки
         if stop_flag and stop_flag.is_set():
@@ -1056,10 +949,7 @@ def search_transactions_paginated(
             params['page'] = page
             
             logger.info(f"Запрашиваем страницу {page}...")
-            api_response = bscscan_request(params)
-            
-            # Извлекаем данные транзакций из API ответа
-            result = api_response.get('result', []) if isinstance(api_response, dict) else []
+            result = bscscan_request(params)
             
             if not result:
                 logger.info(f"Страница {page} не содержит транзакций. Поиск завершен.")
@@ -1068,10 +958,6 @@ def search_transactions_paginated(
             logger.info(f"Получено {len(result)} транзакций на странице {page}")
             
             for tx in result:
-                # Обеспечиваем правильный тип для tx
-                if not isinstance(tx, dict):
-                    continue
-                    
                 # Получаем десятичные знаки для токена
                 contract_addr = tx.get('contractAddress', '').lower()
                 if contract_addr not in token_decimals:
@@ -1082,50 +968,45 @@ def search_transactions_paginated(
                 
                 # Проверяем условия
                 if wallet_address.lower() == tx.get('to', '').lower():  # Только входящие транзакции
-                    # Проверяем, что указаны параметры поиска
-                    if exact_amount is not None or (min_amount is not None and max_amount is not None):
-                        # Проверка на точную сумму
-                        if exact_amount is not None:
-                            if abs(tx_value - exact_amount) < 0.0000001:  # Учитываем погрешность float
-                                matching_transactions.append(tx)
-                                sender = tx.get('from', '').lower()
-                                sender_counter[sender] = sender_counter.get(sender, 0) + 1
-                                
-                                # Сохраняем дополнительную информацию о транзакциях, если нужно
-                                if track_individual_tx and sender_transactions is not None:
-                                    if sender not in sender_transactions:
-                                        sender_transactions[sender] = []
-                                    tx_info: Dict[str, Any] = {
-                                        'hash': tx.get('hash', ''),
-                                        'timestamp': tx.get('timeStamp', ''),
-                                        'value': tx_value,
-                                        'block': tx.get('blockNumber', ''),
-                                        'token': tx.get('tokenSymbol', '')
-                                    }
-                                    sender_transactions[sender].append(tx_info)
-                        
-                        # Проверка на диапазон сумм
-                        elif min_amount is not None and max_amount is not None:
-                            if min_amount <= tx_value <= max_amount:
-                                matching_transactions.append(tx)
-                                sender = tx.get('from', '').lower()
-                                sender_counter[sender] = sender_counter.get(sender, 0) + 1
-                                
-                                # Сохраняем дополнительную информацию о транзакциях, если нужно
-                                if track_individual_tx and sender_transactions is not None:
-                                    if sender not in sender_transactions:
-                                        sender_transactions[sender] = []
-                                    tx_info: Dict[str, Any] = {
-                                        'hash': tx.get('hash', ''),
-                                        'timestamp': tx.get('timeStamp', ''),
-                                        'value': tx_value,
-                                        'block': tx.get('blockNumber', ''),
-                                        'token': tx.get('tokenSymbol', '')
-                                    }
-                                    sender_transactions[sender].append(tx_info)
-                    else:
-                        # Если не указаны параметры поиска, логируем предупреждение и пропускаем транзакцию
-                        logger.warning("Не указаны параметры поиска по сумме. Транзакция пропущена.")
+                    # Проверка на точную сумму
+                    if exact_amount is not None:
+                        if abs(tx_value - exact_amount) < 0.0000001:  # Учитываем погрешность float
+                            matching_transactions.append(tx)
+                            sender = tx.get('from', '').lower()
+                            sender_counter[sender] = sender_counter.get(sender, 0) + 1
+                            
+                            # Сохраняем дополнительную информацию о транзакциях, если нужно
+                            if track_individual_tx:
+                                if sender not in sender_transactions:
+                                    sender_transactions[sender] = []
+                                tx_info = {
+                                    'hash': tx.get('hash', ''),
+                                    'timestamp': tx.get('timeStamp', ''),
+                                    'value': tx_value,
+                                    'block': tx.get('blockNumber', ''),
+                                    'token': tx.get('tokenSymbol', '')
+                                }
+                                sender_transactions[sender].append(tx_info)
+                    
+                    # Проверка на диапазон сумм
+                    elif min_amount is not None and max_amount is not None:
+                        if min_amount <= tx_value <= max_amount:
+                            matching_transactions.append(tx)
+                            sender = tx.get('from', '').lower()
+                            sender_counter[sender] = sender_counter.get(sender, 0) + 1
+                            
+                            # Сохраняем дополнительную информацию о транзакциях, если нужно
+                            if track_individual_tx:
+                                if sender not in sender_transactions:
+                                    sender_transactions[sender] = []
+                                tx_info = {
+                                    'hash': tx.get('hash', ''),
+                                    'timestamp': tx.get('timeStamp', ''),
+                                    'value': tx_value,
+                                    'block': tx.get('blockNumber', ''),
+                                    'token': tx.get('tokenSymbol', '')
+                                }
+                                sender_transactions[sender].append(tx_info)
                                 # Если получили меньше транзакций, чем размер страницы, значит больше данных нет
             if len(result) < page_size:
                 has_more_data = False
@@ -1133,523 +1014,69 @@ def search_transactions_paginated(
             else:
                 # Переходим к следующей странице
                 page += 1
-                # Задержка (адаптивная)
-                time.sleep(adaptive_delay)
+                # Задержка для соблюдения ограничений API
+                time.sleep(delay_seconds)
         
         except Exception as e:
-            err_low = str(e).lower()
             logger.error(f"Ошибка при получении страницы {page}: {e}")
-            # Базовая пауза при ошибке
-            time.sleep(adaptive_delay * 2)
-            if 'rate limit' in err_low or 'too many request' in err_low:
-                consecutive_rate_limits += 1
-                backoff = min(10, 2 * consecutive_rate_limits)
-                logger.warning(f"Rate limit hit (#{consecutive_rate_limits}). Доп. пауза {backoff}s")
-                time.sleep(backoff)
-                # Увеличиваем адаптивную задержку до макс 3 сек
-                adaptive_delay = min(3.0, adaptive_delay * 1.5 + 0.1)
+            time.sleep(delay_seconds * 2)  # Увеличенная задержка при ошибке
+            
+            # Если ошибка связана с превышением лимита, делаем более длительную паузу
+            if str(e).lower().find('rate limit') >= 0:
+                logger.warning("Превышен лимит запросов API. Пауза 10 секунд...")
+                time.sleep(10)
             else:
-                consecutive_rate_limits = 0
-                # Переходим к следующей странице при не rate-limit ошибке
+                # Для других ошибок переходим к следующей странице
                 page += 1
     
     logger.info(f"Поиск завершен. Найдено {len(matching_transactions)} транзакций от {len(sender_counter)} отправителей")
     return matching_transactions, sender_counter, sender_transactions
 
-def get_token_decimal(token_address: str, api_key: Optional[str] = None) -> int:
-    """Получение количества десятичных знаков для токена с учётом API-ключа вкладки"""
+def get_token_decimal(token_address):
+    """Получение количества десятичных знаков для токена"""
+    if not blockchain_enabled:
+        return 18  # Значение по умолчанию
+    
     try:
-        # Пытаемся через BscScan (с ключом, если дан)
-        api_response = bscscan_request({
+        # Сначала пробуем через BSCScan API
+        token_info = bscscan_request({
             'module': 'token',
             'action': 'tokeninfo',
             'contractaddress': token_address
-        }, api_key=api_key)
-        if isinstance(api_response, dict):
-            token_info = api_response.get('result', [])
-            if isinstance(token_info, list) and token_info:
-                d = token_info[0]
-                if isinstance(d, dict):
-                    if 'divisor' in d and str(d['divisor']).isdigit():
-                        return int(d['divisor'])
-                    if 'decimals' in d and str(d['decimals']).isdigit():
-                        return int(d['decimals'])
-        # Web3 fallback
+        })
+        
+        if token_info and isinstance(token_info, list) and len(token_info) > 0:
+            return int(token_info[0].get('divisor', 18))
+        
+        # Если не удалось получить через API, пробуем через Web3
         w3 = RPCPool(RPC_NODES).web3()
         token_contract = w3.eth.contract(address=Web3.to_checksum_address(token_address), abi=ERC20_ABI)
-        return int(token_contract.functions.decimals().call())
+        return token_contract.functions.decimals().call()
+    
     except Exception as e:
         logger.warning(f"Не удалось получить decimals для токена {token_address}: {e}")
-        return 18
+        return 18  # Значение по умолчанию
 
 # ======== GUI ========
-class _QtSignalProxy(QtCore.QObject):
-    """Прокси-объект для безопасного обновления UI из фоновых потоков"""
-    append_text = QtCore.pyqtSignal(str)
-
-
 class LogHandler(logging.Handler):
-    """Пользовательский обработчик логирования: отправляет логи в QTextEdit через сигнал (GUI-поток)."""
-    def __init__(self, text_widget: Any):
+    """Пользовательский обработчик логирования, отправляющий логи в QTextEdit"""
+    def __init__(self, text_widget):
         super().__init__()
         self.text_widget = text_widget
-        self._proxy = _QtSignalProxy()
-        if hasattr(self.text_widget, 'append'):
-            # queued connection по умолчанию между потоками
-            self._proxy.append_text.connect(self.text_widget.append)
         self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         
     def emit(self, record):
-        try:
-            msg = self.format(record)
-            self._proxy.append_text.emit(msg)
-        except Exception:
-            # Никогда не роняем приложение из-за логов
-            pass
+        msg = self.format(record)
+        # Используем signal/slot для безопасного обновления UI из любого потока
+        QtCore.QMetaObject.invokeMethod(
+            self.text_widget, 
+            "append", 
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, msg)
+        )
 
 # ======== #MCP:GUI ========
-
-class MassDistributionTab(QtWidgets.QWidget):
-    # Сигналы этой вкладки
-    update_progress_signal = QtCore.pyqtSignal(str, int)
-    update_status_signal = QtCore.pyqtSignal(str)
-    update_table_signal = QtCore.pyqtSignal(list, dict, dict)
-    update_address_status = QtCore.pyqtSignal(int, str)
-
-    def __init__(self, slot_id: str, slot_title: str, rpc_pool, app_config: Config, api_key: str, parent=None):
-        super().__init__(parent)
-        self.slot_id = slot_id
-        self.slot_title = slot_title
-        self.rpc = rpc_pool
-        self.cfg = app_config
-        self.api_key = api_key
-        self._stop = threading.Event()
-        self._paused = threading.Event()
-        self._active = False
-        self._thread: Optional[threading.Thread] = None
-        self._w3 = self.rpc.web3()
-        self._sender_address: Optional[str] = None
-
-        self._build_ui()
-        self._wire_signals()
-        self._load_slot_wallet()
-
-    # --- UI построение ---
-    def _build_ui(self):
-        layout = QtWidgets.QVBoxLayout(self)
-        header = QtWidgets.QLabel(f"{self.slot_title} [{self.slot_id}]")
-        header.setStyleSheet("font-weight:600")
-        layout.addWidget(header)
-
-        # Блок кошелька
-        wallet_box = QtWidgets.QGroupBox("Кошелёк вкладки")
-        wl = QtWidgets.QGridLayout(wallet_box)
-        self.addr_label = QtWidgets.QLabel("Адрес: —")
-        self.btn_mn = QtWidgets.QPushButton("Ввести сид-фразу")
-        self.btn_pk = QtWidgets.QPushButton("Ввести приватный ключ")
-        self.btn_refresh = QtWidgets.QPushButton("↻")
-        self.balances_label = QtWidgets.QLabel("BNB: — | PLEX: — | USDT: —")
-        wl.addWidget(self.addr_label, 0, 0, 1, 3)
-        wl.addWidget(self.btn_mn, 1, 0)
-        wl.addWidget(self.btn_pk, 1, 1)
-        wl.addWidget(self.btn_refresh, 1, 2)
-        wl.addWidget(self.balances_label, 2, 0, 1, 3)
-        layout.addWidget(wallet_box)
-
-        # Параметры
-        params = QtWidgets.QGroupBox("Параметры")
-        pl = QtWidgets.QGridLayout(params)
-        pl.addWidget(QtWidgets.QLabel("Токен:"), 0, 0)
-        self.token_combo = QtWidgets.QComboBox()
-        self.token_combo.addItems(["BNB", "PLEX", "USDT", "Другой..."])
-        self.token_combo.setCurrentText("PLEX")
-        self.token_addr_edit = QtWidgets.QLineEdit()
-        self.token_addr_edit.setPlaceholderText("Адрес контракта 0x...")
-        self.token_addr_edit.setEnabled(False)
-        self.token_combo.currentTextChanged.connect(lambda t: self.token_addr_edit.setEnabled(t == "Другой..."))
-        pl.addWidget(self.token_combo, 0, 1)
-        pl.addWidget(self.token_addr_edit, 0, 2)
-        pl.addWidget(QtWidgets.QLabel("Сумма на адрес:"), 1, 0)
-        self.amount_spin = QtWidgets.QDoubleSpinBox()
-        self.amount_spin.setRange(0.00000001, 1_000_000)
-        self.amount_spin.setDecimals(8)
-        self.amount_spin.setValue(0.05)
-        pl.addWidget(self.amount_spin, 1, 1)
-        pl.addWidget(QtWidgets.QLabel("Интервал (сек):"), 2, 0)
-        self.interval_spin = QtWidgets.QSpinBox()
-        self.interval_spin.setRange(1, 600)
-        self.interval_spin.setValue(5)
-        pl.addWidget(self.interval_spin, 2, 1)
-        pl.addWidget(QtWidgets.QLabel("Циклы:"), 3, 0)
-        self.cycles_spin = QtWidgets.QSpinBox()
-        self.cycles_spin.setRange(1, 100)
-        self.cycles_spin.setValue(1)
-        pl.addWidget(self.cycles_spin, 3, 1)
-        layout.addWidget(params)
-
-        # Импорт адресов
-        import_box = QtWidgets.QGroupBox("Адреса получателей")
-        il = QtWidgets.QVBoxLayout(import_box)
-        self.addresses_edit = QtWidgets.QTextEdit()
-        self.addresses_edit.setPlaceholderText("Вставьте адреса (через пробел, перевод строки или запятую)")
-        btns = QtWidgets.QHBoxLayout()
-        self.btn_add = QtWidgets.QPushButton("Добавить")
-        self.btn_clear = QtWidgets.QPushButton("Очистить")
-        btns.addWidget(self.btn_add)
-        btns.addWidget(self.btn_clear)
-        il.addWidget(self.addresses_edit)
-        il.addLayout(btns)
-        layout.addWidget(import_box)
-
-        # Таблица
-        self.table = QtWidgets.QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(['Адрес', 'Статус', 'Отправлено', 'Tx', 'Время'])
-        self.table.horizontalHeader().setSectionResizeMode(0, STRETCH_MODE)
-        layout.addWidget(self.table)
-
-        # Управление
-        ctrl = QtWidgets.QHBoxLayout()
-        self.btn_start = QtWidgets.QPushButton("Старт")
-        self.btn_pause = QtWidgets.QPushButton("Пауза")
-        self.btn_resume = QtWidgets.QPushButton("Продолжить")
-        self.btn_stop = QtWidgets.QPushButton("Стоп")
-        self.btn_pause.setEnabled(False)
-        self.btn_resume.setEnabled(False)
-        self.btn_stop.setEnabled(False)
-        ctrl.addWidget(self.btn_start)
-        ctrl.addWidget(self.btn_pause)
-        ctrl.addWidget(self.btn_resume)
-        ctrl.addWidget(self.btn_stop)
-        layout.addLayout(ctrl)
-
-        # Прогресс
-        self.progress = QtWidgets.QProgressBar()
-        self.progress_label = QtWidgets.QLabel("Готово")
-        layout.addWidget(self.progress)
-        layout.addWidget(self.progress_label)
-
-    def _wire_signals(self):
-        self.btn_mn.clicked.connect(self._enter_mnemonic)
-        self.btn_pk.clicked.connect(self._enter_pk)
-        self.btn_refresh.clicked.connect(self._refresh_balances)
-        self.btn_add.clicked.connect(self._add_addresses)
-        self.btn_clear.clicked.connect(self._clear_addresses)
-        self.btn_start.clicked.connect(self._start)
-        self.btn_pause.clicked.connect(self._pause)
-        self.btn_resume.clicked.connect(self._resume)
-        self.btn_stop.clicked.connect(self._stop_clicked)
-
-    # --- Кошелёк ---
-    def _load_slot_wallet(self):
-        pk = self.cfg.get_key(self.slot_id)
-        if pk and WEB3_AVAILABLE and Account:
-            try:
-                acct = Account.from_key(pk)
-                self._sender_address = Web3.to_checksum_address(acct.address)
-                self.addr_label.setText(f"Адрес: {self._sender_address}")
-                self._refresh_balances()
-            except Exception as e:
-                logger.warning(f"[{self.slot_id}] не удалось загрузить адрес из PK: {e}")
-
-    def _enter_mnemonic(self):
-        text, ok = QtWidgets.QInputDialog.getMultiLineText(self, "Сид-фраза", "Введите сид-фразу (m/44'/60'/0'/0/0):")
-        if not ok or not text.strip():
-            return
-        try:
-            if not Account:
-                raise RuntimeError("eth_account недоступен")
-            acct = Account.from_mnemonic(text.strip())
-            pk = acct.key.hex()
-            self.cfg.set_mnemonic(text.strip(), slot=self.slot_id)
-            self.cfg.set_key(pk, slot=self.slot_id)
-            self._sender_address = Web3.to_checksum_address(acct.address)
-            self.addr_label.setText(f"Адрес: {self._sender_address}")
-            self._refresh_balances()
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(self, 'Ошибка', f'Не удалось импортировать сид-фразу: {e}')
-
-    def _enter_pk(self):
-        text, ok = QtWidgets.QInputDialog.getText(self, "Приватный ключ", "Введите приватный ключ (0x...)")
-        if not ok or not text.strip():
-            return
-        pk = text.strip()
-        try:
-            if pk.startswith('0x') and len(pk) in (66, 64+2):
-                acct = Account.from_key(pk)
-                self.cfg.set_key(pk, slot=self.slot_id)
-                self._sender_address = Web3.to_checksum_address(acct.address)
-                self.addr_label.setText(f"Адрес: {self._sender_address}")
-                self._refresh_balances()
-            else:
-                raise ValueError('Неверный формат приватного ключа')
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(self, 'Ошибка', f'Не удалось сохранить приватный ключ: {e}')
-
-    def _refresh_balances(self):
-        if not self._sender_address or not WEB3_AVAILABLE:
-            self.balances_label.setText("BNB: — | PLEX: — | USDT: —")
-            return
-        try:
-            bal_bnb = self._w3.eth.get_balance(self._sender_address) / 10**18
-            # PLEX и USDT через контракты
-            plex_addr = self.cfg.data.get('plex_address') or PLEX_CONTRACT
-            usdt_addr = self.cfg.data.get('usdt_address') or USDT_CONTRACT
-            plex = self._w3.eth.contract(address=Web3.to_checksum_address(plex_addr), abi=ERC20_ABI)
-            usdt = self._w3.eth.contract(address=Web3.to_checksum_address(usdt_addr), abi=ERC20_ABI)
-            plex_dec = plex.functions.decimals().call()
-            usdt_dec = usdt.functions.decimals().call()
-            plex_bal = plex.functions.balanceOf(self._sender_address).call() / (10**plex_dec)
-            usdt_bal = usdt.functions.balanceOf(self._sender_address).call() / (10**usdt_dec)
-            self.balances_label.setText(f"BNB: {bal_bnb:.5f} | PLEX: {plex_bal:.4f} | USDT: {usdt_bal:.4f}")
-        except Exception as e:
-            self.balances_label.setText(f"Баланс: ошибка ({e})")
-
-    # --- Адреса ---
-    def _parse_addresses(self, text: str) -> List[str]:
-        parts = [p.strip() for p in text.replace('\n', ' ').replace(',', ' ').split(' ') if p.strip()]
-        addrs: List[str] = []
-        for p in parts:
-            if isinstance(p, str) and p.startswith('0x') and len(p) == 42:
-                addrs.append(Web3.to_checksum_address(p))
-        return list(dict.fromkeys(addrs))
-
-    def _add_addresses(self):
-        addrs = self._parse_addresses(self.addresses_edit.toPlainText())
-        existing = set(self.table.item(r, 0).text() for r in range(self.table.rowCount()))
-        for a in addrs:
-            if a in existing:
-                continue
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(a))
-            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem("Ожидание"))
-            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem("0"))
-            self.table.setItem(row, 3, QtWidgets.QTableWidgetItem("-"))
-            self.table.setItem(row, 4, QtWidgets.QTableWidgetItem("-"))
-        self.addresses_edit.clear()
-
-    def _clear_addresses(self):
-        self.table.setRowCount(0)
-
-    # --- Управление рассылкой ---
-    def _start(self):
-        if self._active:
-            return
-        if not self._sender_address:
-            QtWidgets.QMessageBox.warning(self, 'Кошелёк не задан', 'Сначала введите сид-фразу или приватный ключ для этой вкладки')
-            return
-        if self.table.rowCount() == 0:
-            QtWidgets.QMessageBox.information(self, 'Нет адресов', 'Добавьте адреса получателей')
-            return
-        self._active = True
-        self._stop.clear()
-        self._paused.clear()
-        self.btn_start.setEnabled(False)
-        self.btn_pause.setEnabled(True)
-        self.btn_stop.setEnabled(True)
-        self.progress.setValue(0)
-        self.progress_label.setText("Старт")
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
-
-    def _pause(self):
-        if not self._active:
-            return
-        self._paused.set()
-        self.btn_pause.setEnabled(False)
-        self.btn_resume.setEnabled(True)
-
-    def _resume(self):
-        if not self._active:
-            return
-        self._paused.clear()
-        self.btn_pause.setEnabled(True)
-        self.btn_resume.setEnabled(False)
-
-    def _stop_clicked(self):
-        if not self._active:
-            return
-        self._stop.set()
-
-    def _run_loop(self):
-        try:
-            token_label = self.token_combo.currentText()
-            token_addr = None
-            decimals = 18
-            if token_label == 'Другой...':
-                token_addr = self.token_addr_edit.text().strip()
-                decimals = get_token_decimal(token_addr, api_key=self.api_key)
-            elif token_label == 'USDT':
-                token_addr = USDT_CONTRACT
-                decimals = get_token_decimal(token_addr, api_key=self.api_key)
-            elif token_label == 'PLEX':
-                token_addr = PLEX_CONTRACT
-                decimals = get_token_decimal(token_addr, api_key=self.api_key)
-
-            amount = float(self.amount_spin.value())
-            interval = int(self.interval_spin.value())
-            cycles = int(self.cycles_spin.value())
-
-            # создаём запись рассылки
-            dist_id = add_mass_distribution(
-                name=f"{self.slot_title} {datetime.now().strftime('%H:%M:%S')}",
-                token_address=token_addr or 'native',
-                token_symbol=token_label,
-                amount_per_tx=amount,
-                total_addresses=self.table.rowCount(),
-                total_cycles=cycles,
-                interval_seconds=interval,
-                slot=self.slot_id
-            )
-
-            for cycle in range(cycles):
-                if self._stop.is_set():
-                    break
-                for row in range(self.table.rowCount()):
-                    if self._stop.is_set():
-                        break
-                    while self._paused.is_set() and not self._stop.is_set():
-                        time.sleep(0.2)
-                    to_addr = self.table.item(row, 0).text()
-                    self._set_row_status(row, "⟳ Отправка...")
-                    try:
-                        if token_addr:
-                            tx_hash = self._send_token_slot(to_addr, token_addr, decimals, amount)
-                        else:
-                            tx_hash = self._send_bnb_slot(to_addr, amount)
-                        self._set_row_status(row, "✓ Успешно")
-                        self.table.setItem(row, 3, QtWidgets.QTableWidgetItem(tx_hash))
-                        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(int(self.table.item(row, 2).text()) + 1)))
-                        self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(datetime.now().strftime('%H:%M:%S')))
-                        add_mass_distribution_item(dist_id, to_addr, cycle+1, tx_hash, 'success', None, slot=self.slot_id)
-                    except Exception as e:
-                        self._set_row_status(row, "✗ Ошибка")
-                        add_mass_distribution_item(dist_id, to_addr, cycle+1, '-', 'error', str(e), slot=self.slot_id)
-                    # прогресс
-                    done = cycle * self.table.rowCount() + row + 1
-                    total = cycles * self.table.rowCount()
-                    self._set_progress(done, total)
-                    time.sleep(interval)
-
-            update_mass_distribution_status(dist_id, 'completed' if not self._stop.is_set() else 'cancelled')
-        finally:
-            self._active = False
-            QtCore.QMetaObject.invokeMethod(self.btn_start, "setEnabled", QtCore.Qt.QueuedConnection, QtCore.Q_ARG(bool, True))
-            QtCore.QMetaObject.invokeMethod(self.btn_pause, "setEnabled", QtCore.Qt.QueuedConnection, QtCore.Q_ARG(bool, False))
-            QtCore.QMetaObject.invokeMethod(self.btn_resume, "setEnabled", QtCore.Qt.QueuedConnection, QtCore.Q_ARG(bool, False))
-            QtCore.QMetaObject.invokeMethod(self.btn_stop, "setEnabled", QtCore.Qt.QueuedConnection, QtCore.Q_ARG(bool, False))
-
-    def _set_progress(self, done: int, total: int):
-        pct = int(100 * done / max(total, 1))
-        QtCore.QMetaObject.invokeMethod(self.progress, "setValue", QtCore.Qt.QueuedConnection, QtCore.Q_ARG(int, pct))
-        QtCore.QMetaObject.invokeMethod(self.progress_label, "setText", QtCore.Qt.QueuedConnection,
-                                        QtCore.Q_ARG(str, f"{done}/{total}"))
-
-    def _set_row_status(self, row: int, status: str):
-        item = QtWidgets.QTableWidgetItem(status)
-        if status.startswith('✓'):
-            item.setBackground(QtGui.QColor('#004400'))
-        elif status.startswith('✗'):
-            item.setBackground(QtGui.QColor('#440000'))
-        elif status.startswith('⟳'):
-            item.setBackground(QtGui.QColor('#444400'))
-        QtCore.QMetaObject.invokeMethod(self.table, "setItem", QtCore.Qt.QueuedConnection,
-                                        QtCore.Q_ARG(int, row), QtCore.Q_ARG(int, 1), QtCore.Q_ARG(object, item))
-
-    # --- Отправка ---
-    def _get_nonce(self):
-        return self._w3.eth.get_transaction_count(self._sender_address)
-
-    def _gas_price(self):
-        return int(float(getattr(self.cfg, 'get_gas_price', lambda: 5)()) * 1e9)
-
-    def _send_bnb_slot(self, to_address: str, amount_native: float) -> str:
-        pk = self.cfg.get_key(self.slot_id)
-        if not pk:
-            raise RuntimeError('Не задан приватный ключ для вкладки')
-        tx = {
-            'nonce': self._get_nonce(),
-            'to': Web3.to_checksum_address(to_address),
-            'value': int(amount_native * 10**18),
-            'gas': 21000,
-            'gasPrice': self._gas_price(),
-            'chainId': getattr(self._w3.eth, 'chain_id', 56),
-        }
-        signed = self._w3.eth.account.sign_transaction(tx, pk)
-        tx_hash = send_raw_tx(self._w3, signed.rawTransaction).hex()
-        return tx_hash
-
-    def _send_token_slot(self, to_address: str, token_addr: str, decimals: int, amount_token: float) -> str:
-        pk = self.cfg.get_key(self.slot_id)
-        if not pk:
-            raise RuntimeError('Не задан приватный ключ для вкладки')
-        token = self._w3.eth.contract(address=Web3.to_checksum_address(token_addr), abi=ERC20_ABI)
-        amount_wei = int(amount_token * (10 ** decimals))
-        nonce = self._get_nonce()
-        tx = token.functions.transfer(Web3.to_checksum_address(to_address), amount_wei).build_transaction({
-            'from': self._sender_address,
-            'nonce': nonce,
-            'gasPrice': self._gas_price(),
-        })
-        # оценка газа с запасом
-        gas_est = token.functions.transfer(Web3.to_checksum_address(to_address), amount_wei).estimate_gas({'from': self._sender_address})
-        tx['gas'] = int(gas_est * 1.2)
-        tx['chainId'] = getattr(self._w3.eth, 'chain_id', 56)
-        signed = self._w3.eth.account.sign_transaction(tx, pk)
-        tx_hash = send_raw_tx(self._w3, signed.rawTransaction).hex()
-        return tx_hash
-
 class MainWindow(QtWidgets.QMainWindow):
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore
-        """Гарантированная остановка фоновых процессов при закрытии окна.
-        Останавливает массовую рассылку, трекер транзакций и поисковые/скан потоки.
-        """
-        try:
-            logger.info("Завершение приложения: остановка фоновых потоков…")
-
-            # Массовая рассылка
-            if getattr(self, 'mass_distribution_active', False):
-                try:
-                    self._mass_stop_distribution()
-                except Exception as e:
-                    logger.warning(f"Ошибка остановки массовой рассылки при закрытии: {e}")
-
-            # Общий трекер транзакций
-            if getattr(self, 'tx_tracker', None) and self.tx_tracker.is_alive():  # type: ignore[attr-defined]
-                try:
-                    self._tx_tracker_stop_flag = True  # если используется флаг
-                except Exception:
-                    pass
-
-            # Поисковый поток
-            if getattr(self, 'search_thread', None) and self.search_thread.is_alive():  # type: ignore[attr-defined]
-                try:
-                    self._search_stop_flag = True
-                except Exception:
-                    pass
-
-            # Дополнительно: выставим паузу/стоп для массовой рассылки
-            if getattr(self, 'mass_distribution_thread', None) and self.mass_distribution_thread.is_alive():  # type: ignore[attr-defined]
-                try:
-                    self.mass_distribution_active = False
-                except Exception:
-                    pass
-
-            # Неблокирующее ожидание небольшое, чтобы потоки успели завершить итерацию
-            deadline = time.time() + 2.0
-            for th_name in ["mass_distribution_thread", "tx_tracker", "search_thread"]:
-                th = getattr(self, th_name, None)
-                if th and getattr(th, 'is_alive', lambda: False)():
-                    try:
-                        remaining = deadline - time.time()
-                        if remaining > 0:
-                            th.join(timeout=remaining)
-                    except Exception:
-                        pass
-
-            logger.info("Фоновые потоки остановлены. Закрытие окна.")
-        finally:
-            event.accept()
     """Главное окно приложения WalletSender
     
     REFACTOR:MCP - Разделить на более мелкие компоненты UI
@@ -1666,47 +1093,39 @@ class MainWindow(QtWidgets.QMainWindow):
     queue_item_update_signal = QtCore.pyqtSignal(int, dict)
     completed_item_signal = QtCore.pyqtSignal(dict)
     update_address_status = QtCore.pyqtSignal(int, str)  # row, status для массовой рассылки
-    found_tx_added_signal = QtCore.pyqtSignal()  # сигнал для обновления таблицы найденных транзакций
-    # Доп. сигналы для потокобезопасного UI
-    update_mass_cycle_label = QtCore.pyqtSignal(str)
-    mass_distribution_finished_signal = QtCore.pyqtSignal()
-    # Сигнал для обновления прогресса адреса (row, current, total)
-    address_progress_signal = QtCore.pyqtSignal(int, int, int)
-    mass_stats_signal = QtCore.pyqtSignal(int, int, float, float)  # sent, errors, gas_spent, total_amount
 
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__()
         self.setWindowTitle('Анализатор & Награды PLEX ONE/USDT')
-        self.resize(1000, 800)
-        self.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
+        self.resize(1000, 800)  # Увеличил высоту окна
+        self.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())  # Тёмная тема
 
-        # Базовые поля состояния
-        self.cfg = Config()
-        init_db()
-        self.rpc = RPCPool(RPC_NODES)
-        self.pk: Optional[str] = self.cfg.get_key()
-        self.mn: Optional[str] = self.cfg.get_mnemonic()
-        self.sending: bool = False
-        self.tx_tracker: Optional[threading.Thread] = None
-        self.search_thread: Optional[threading.Thread] = None
-        self.is_searching: bool = False
-        self.stop_search_event = threading.Event()
-        self.last_rewards_state: Optional[List] = None
-        self.reward_per_tx_mode = self.cfg.get_reward_per_tx()
-        self.queue_paused = False
-
-        # Параметры прямой отправки
+        self.cfg = Config()  # Инициализация конфигурации
+        init_db()  # Инициализация базы данных
+        self.rpc = RPCPool(RPC_NODES)  # Создание пула RPC узлов
+        self.pk = self.cfg.get_key()  # Получение приватного ключа из конфигурации
+        self.mn = self.cfg.get_mnemonic()  # Получение мнемонической фразы
+        self.sending = False  # Флаг активного процесса отправки
+        self.tx_tracker = None  # Поток для отслеживания транзакций
+        self.search_thread = None  # Поток для поиска транзакций
+        self.is_searching = False  # Флаг активного поиска
+        self.stop_search_event = threading.Event()  # Событие для остановки поиска
+        self.last_rewards_state = None  # Хранение предыдущего состояния таблицы наград
+        self.reward_per_tx_mode = self.cfg.get_reward_per_tx()  # Режим награждения за каждую транзакцию
+        self.queue_paused = False  # Флаг паузы очереди отправки
+        
+        
+        # Инициализация таймера для периодической прямой отправки
         self.direct_send_timer = QtCore.QTimer()
         self.direct_send_timer.timeout.connect(self._direct_send_periodic_send)
         self.direct_send_active = False
         self.direct_send_current_period = 0
         self.direct_send_total_periods = 0
-        self.direct_send_params: Dict[str, Any] = {}
+        self.direct_send_params = {}  # Параметры для отправки: адрес, тип токена, сумма
 
-        # UI
-        self._build_ui()
-
-        # Сигналы
+        self._build_ui()  # Построение пользовательского интерфейса
+        
+        # Подключение сигналов
         self.update_progress_signal.connect(self._update_progress)
         self.update_status_signal.connect(self.log)
         self.update_table_signal.connect(self._update_search_results)
@@ -1714,32 +1133,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.queue_item_update_signal.connect(self._update_queue_item)
         self.completed_item_signal.connect(self._add_to_completed_table)
         self.update_address_status.connect(self._update_address_status_ui)
-        self.update_mass_cycle_label.connect(self._set_mass_cycle_label)
-        self.mass_distribution_finished_signal.connect(self._mass_distribution_finished)
-        self.address_progress_signal.connect(self._update_progress_item)
-        self.mass_stats_signal.connect(self._update_mass_statistics)
-
-        # Регистрация нестандартных типов (на случай генерации QVector<int> внутри Qt)
-        try:
-            from PyQt5.QtCore import qRegisterMetaType
-            qRegisterMetaType('QVector<int>')  # подавляем предупреждение очереди аргументов
-        except Exception:
-            pass
-
-        # Логи в UI
+        
+        # Настройка пользовательского обработчика логов
         self.log_handler = LogHandler(self.log_area)
         logger.addHandler(self.log_handler)
         logger.setLevel(logging.INFO)
-        logger.info("Приложение запущено")
         
+        logger.info("Приложение запущено")
     @QtCore.pyqtSlot(int, str)
     def _update_address_status_ui(self, row, status):
         """Обновление статуса адреса в таблице массовой рассылки"""
         try:
-            if not hasattr(self, 'mass_table'):
+            if not hasattr(self, 'mass_addresses_table'):
                 return
-            if row >= self.mass_table.rowCount():
+                
+            if row >= self.mass_addresses_table.rowCount():
                 return
+                
             status_item = QtWidgets.QTableWidgetItem(status)
             # Устанавливаем цвет в зависимости от статуса
             if status == "✓ Успешно":
@@ -1748,14 +1158,36 @@ class MainWindow(QtWidgets.QMainWindow):
                 status_item.setBackground(QtGui.QColor('#440000'))
             elif status == "⟳ Отправка...":
                 status_item.setBackground(QtGui.QColor('#444400'))
-            self.mass_table.setItem(row, 1, status_item)
+            
+            self.mass_addresses_table.setItem(row, 1, status_item)
+                        
         except Exception as e:
             logger.error(f"Ошибка обновления статуса: {e}")
 
-    @QtCore.pyqtSlot(str)
-    def _set_mass_cycle_label(self, text: str) -> None:
-        if hasattr(self, 'mass_current_cycle_label') and self.mass_current_cycle_label:
-            self.mass_current_cycle_label.setText(text)
+    @QtCore.pyqtSlot(int, str)
+    def _update_address_status_ui(self, row, status):
+        """Обновление статуса адреса в таблице массовой рассылки"""
+        try:
+            if not hasattr(self, 'mass_addresses_table'):
+                return
+                
+            if row >= self.mass_addresses_table.rowCount():
+                return
+                
+            status_item = QtWidgets.QTableWidgetItem(status)
+            # Устанавливаем цвет в зависимости от статуса
+            if status == "✓ Успешно":
+                status_item.setBackground(QtGui.QColor('#004400'))
+            elif status == "✗ Ошибка":
+                status_item.setBackground(QtGui.QColor('#440000'))
+            elif status == "⟳ Отправка...":
+                status_item.setBackground(QtGui.QColor('#444400'))
+            
+            self.mass_addresses_table.setItem(row, 1, status_item)
+                        
+        except Exception as e:
+            logger.error(f"Ошибка обновления статуса: {e}")
+
 
     def _build_ui(self):
         """Построение пользовательского интерфейса с вкладками"""
@@ -1765,25 +1197,7 @@ class MainWindow(QtWidgets.QMainWindow):
         tabs.addTab(self._tab_rewards(), 'Награды')
         tabs.addTab(self._tab_tx_rewards(), 'Награды за Tx')
         tabs.addTab(self._tab_direct_send(), 'Прямая отправка')
-        # Три независимых вкладки массовой рассылки
-        try:
-            tabs.addTab(
-                MassDistributionTab(slot_id="slot1", slot_title="Массовая рассылка 1", rpc_pool=self.rpc, app_config=self.cfg,
-                                    api_key="RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1"),
-                'Массовая рассылка 1'
-            )
-            tabs.addTab(
-                MassDistributionTab(slot_id="slot2", slot_title="Массовая рассылка 2", rpc_pool=self.rpc, app_config=self.cfg,
-                                    api_key="U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ"),
-                'Массовая рассылка 2'
-            )
-            tabs.addTab(
-                MassDistributionTab(slot_id="slot3", slot_title="Массовая рассылка 3", rpc_pool=self.rpc, app_config=self.cfg,
-                                    api_key="RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH"),
-                'Массовая рассылка 3'
-            )
-        except Exception as e:
-            logger.error(f"Ошибка инициализации вкладок массовой рассылки: {e}")
+        tabs.addTab(self._tab_mass_distribution(), 'Массовая рассылка')  # #MCP:MASS_DIST - Вкладка массовой рассылки
         tabs.addTab(self._tab_sending_queue(), 'Очередь отправки')  # Новая вкладка
         tabs.addTab(self._tab_ds(), 'ДС')  # #MCP:DS_TAB - Вкладка дополнительных сервисов
         tabs.addTab(self._tab_history(), 'История')
@@ -1792,37 +1206,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(tabs)
 
         # Область для логов внизу окна
-        self.log_area = QtWidgets.QTextEdit()
-        self.log_area.setReadOnly(True)
+        self.log_area = QtWidgets.QTextEdit(readOnly=True)
         dock = QtWidgets.QDockWidget('Лог')
         dock.setWidget(self.log_area)
-        self.addDockWidget(QtCore.Qt.DockWidgetArea(BOTTOM_DOCK_WIDGET_AREA), dock)
+        self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, dock)
 
-    def _update_progress(self, bar_name: str, value: int) -> None:
-        """Обновление индикатора прогресса с защитой от отсутствующих виджетов и ошибок."""
-        try:
-            mapping = {
-                'scan': 'progress',
-                'send': 'progress_send',
-                'search': 'progress_search',
-                'tx_rewards': 'progress_tx_rewards',
-                'direct_send': 'direct_send_progress',
-                'mass': 'mass_progress'
-            }
-            attr = mapping.get(bar_name)
-            if not attr:
-                return
-            widget = getattr(self, attr, None)
-            if widget is not None:
-                widget.setValue(int(value))
-        except Exception as e:
-            logger.error(f"Ошибка _update_progress({bar_name}): {e}")
+    def _update_progress(self, bar_name, value):
+        """Обновление указанного индикатора прогресса значением"""
+        if bar_name == "scan":
+            self.progress.setValue(value)
+        elif bar_name == "send":
+            self.progress_send.setValue(value)
+        elif bar_name == "search":
+            self.progress_search.setValue(value)
+        elif bar_name == "tx_rewards":
+            self.progress_tx_rewards.setValue(value)
+        elif bar_name == "direct_send":
+            self.direct_send_progress.setValue(value)
+        elif bar_name == "mass":
+            self.mass_progress.setValue(value)
 
-    def log(self, text: str) -> None:
+    def log(self, text):
         """Устаревший метод логирования - перенаправляет в logger"""
         logger.info(text)
 
-    def _toggle_search_mode(self) -> None:
+    def _toggle_search_mode(self):
         """Переключает режим поиска между точной суммой и диапазоном"""
         is_exact_mode = self.radio_exact.isChecked()
         
@@ -1834,7 +1242,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_amt_to.setEnabled(not is_exact_mode)
         
         logger.debug(f"Режим поиска переключен на: {'точная сумма' if is_exact_mode else 'диапазон'}")
-        
     # --- Вкладка «Очередь отправки» ---
     def _tab_sending_queue(self):
         """Создание вкладки для отслеживания очереди отправки"""
@@ -1857,10 +1264,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.queue_table.setHorizontalHeaderLabels([
             'Статус', 'Адрес получателя', 'Токен', 'Сумма', 'Время'
         ])
-        header = self.queue_table.horizontalHeader()
-        if header:
-            header.setSectionResizeMode(STRETCH_MODE)
-        self.queue_table.setSelectionBehavior(SELECT_ROWS)
+        self.queue_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.queue_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
         layout.addWidget(self.queue_table)
         
         # Таблица завершенных отправок
@@ -1871,11 +1276,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.completed_table.setHorizontalHeaderLabels([
             'Статус', 'Адрес получателя', 'Токен', 'Сумма', 'Хэш TX', 'Время'
         ])
-        header = self.completed_table.horizontalHeader()
-        if header:
-            header.setSectionResizeMode(STRETCH_MODE)  # QHeaderView.Stretch
+        self.completed_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.completed_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
-        self.completed_table.setContextMenuPolicy(CUSTOM_CONTEXT_MENU)
+        self.completed_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.completed_table.customContextMenuRequested.connect(self._queue_context_menu)
         completed_layout.addWidget(self.completed_table)
         
@@ -1902,11 +1305,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.export_results_btn = QtWidgets.QPushButton("Экспорт результатов")
         self.export_results_btn.clicked.connect(self._export_queue_results)
         buttons_layout.addWidget(self.export_results_btn)
-        
-        # Кнопка для статистики API ключей
-        self.api_stats_btn = QtWidgets.QPushButton("Статистика API")
-        self.api_stats_btn.clicked.connect(self._show_api_keys_stats)
-        buttons_layout.addWidget(self.api_stats_btn)
         
         layout.addLayout(buttons_layout)
         
@@ -2027,7 +1425,7 @@ class MainWindow(QtWidgets.QMainWindow):
             tx_item = QtWidgets.QTableWidgetItem(item['tx_hash'][:10] + "..." + item['tx_hash'][-6:] if item['tx_hash'] else "-")
             if item['tx_hash']:
                 tx_item.setToolTip(item['tx_hash'])
-                tx_item.setData(USER_ROLE, item['tx_hash'])
+                tx_item.setData(QtCore.Qt.UserRole, item['tx_hash'])
             self.completed_table.setItem(row, 4, tx_item)
             
             # Время
@@ -2054,7 +1452,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
             
         row = selected[0].row()
-        tx_hash = self.completed_table.item(row, 4).data(USER_ROLE)
+        tx_hash = self.completed_table.item(row, 4).data(QtCore.Qt.UserRole)
         address = self.completed_table.item(row, 1).text()
         
         if action == copy_tx and tx_hash:
@@ -2085,7 +1483,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     token = self.completed_table.item(row, 2).text()
                     amount = self.completed_table.item(row, 3).text()
                     tx_item = self.completed_table.item(row, 4)
-                    tx_hash = tx_item.data(USER_ROLE) if tx_item else ""
+                    tx_hash = tx_item.data(QtCore.Qt.UserRole) if tx_item else ""
                     time = self.completed_table.item(row, 5).text()
                     
                     f.write(f'"{status}","{address}","{token}",{amount},"{tx_hash}","{time}"\n')
@@ -2161,138 +1559,6 @@ class MainWindow(QtWidgets.QMainWindow):
             logger.info(f"Результаты экспортированы в {path}")
         except Exception as e:
             logger.error(f"Ошибка при экспорте результатов: {e}")
-
-    def _show_api_keys_stats(self) -> None:
-        """Отображение статистики API ключей в отдельном окне"""
-        stats = api_key_rotator.get_statistics()
-        
-        stats_dialog = QtWidgets.QDialog(self)
-        stats_dialog.setWindowTitle("Статистика API ключей BscScan")
-        stats_dialog.resize(700, 500)
-        
-        layout = QtWidgets.QVBoxLayout(stats_dialog)
-        
-        # Общая информация
-        info_text = QtWidgets.QTextEdit()
-        info_text.setReadOnly(True)
-        
-        info_content = f"""
-🔑 СТАТИСТИКА API КЛЮЧЕЙ BSCSCAN
-
-📊 Общая информация:
-• Всего ключей: {stats['total_keys']}
-• Активных ключей: {stats['active_keys']}
-• Заблокированных ключей: {stats['failed_keys']}
-• Общее количество запросов: {stats['total_requests']}
-• Последняя ротация: {stats['last_rotation']}
-
-🎯 Текущий активный ключ: {stats['current_key']}
-
-📈 Детальная статистика по ключам:
-"""
-        
-        for key_masked, details in stats['key_details'].items():
-            status_emoji = "🟢" if details['status'] == 'ACTIVE' else "🔴"
-            info_content += f"""
-{status_emoji} Ключ: {key_masked}
-   • Статус: {details['status']}
-   • Запросов: {details['requests']}
-   • Успешность: {details['success_rate']:.1f}%
-   • Последнее использование: {details['last_used'] or 'Никогда'}
-"""
-        
-        info_content += f"""
-
-⚙️ Управление ключами:
-• Ротация происходит автоматически при ошибках
-• Заблокированные ключи восстанавливаются при успешных запросах
-• При блокировке всех ключей происходит автоматический сброс
-
-🔄 Алгоритм ротации:
-1. При ошибке API - блокировка текущего ключа
-2. Переключение на следующий активный ключ
-3. При блокировке всех ключей - сброс блокировок
-4. Автовосстановление при успешных запросах
-        """
-        
-        info_text.setPlainText(info_content)
-        layout.addWidget(info_text)
-        
-        # Кнопки управления
-        buttons_layout = QtWidgets.QHBoxLayout()
-        
-        refresh_btn = QtWidgets.QPushButton("🔄 Обновить")
-        refresh_btn.clicked.connect(lambda: self._refresh_api_stats(info_text))
-        buttons_layout.addWidget(refresh_btn)
-        
-        reset_btn = QtWidgets.QPushButton("🔓 Разблокировать все ключи")
-        reset_btn.clicked.connect(lambda: self._reset_api_keys(info_text))
-        buttons_layout.addWidget(reset_btn)
-        
-        close_btn = QtWidgets.QPushButton("Закрыть")
-        close_btn.clicked.connect(stats_dialog.close)
-        buttons_layout.addWidget(close_btn)
-        
-        layout.addLayout(buttons_layout)
-        
-        stats_dialog.exec_()
-    
-    def _refresh_api_stats(self, text_widget: QtWidgets.QTextEdit) -> None:
-        """Обновление статистики API ключей"""
-        # Повторно вызываем отображение статистики
-        stats = api_key_rotator.get_statistics()
-        
-        # Обновляем содержимое
-        info_content = f"""
-🔑 СТАТИСТИКА API КЛЮЧЕЙ BSCSCAN (Обновлено: {datetime.now().strftime('%H:%M:%S')})
-
-📊 Общая информация:
-• Всего ключей: {stats['total_keys']}
-• Активных ключей: {stats['active_keys']}
-• Заблокированных ключей: {stats['failed_keys']}
-• Общее количество запросов: {stats['total_requests']}
-• Последняя ротация: {stats['last_rotation']}
-
-🎯 Текущий активный ключ: {stats['current_key']}
-
-📈 Детальная статистика по ключам:
-"""
-        
-        for key_masked, details in stats['key_details'].items():
-            status_emoji = "🟢" if details['status'] == 'ACTIVE' else "🔴"
-            info_content += f"""
-{status_emoji} Ключ: {key_masked}
-   • Статус: {details['status']}
-   • Запросов: {details['requests']}
-   • Успешность: {details['success_rate']:.1f}%
-   • Последнее использование: {details['last_used'] or 'Никогда'}
-"""
-        
-        info_content += """
-
-⚙️ Управление ключами:
-• Ротация происходит автоматически при ошибках
-• Заблокированные ключи восстанавливаются при успешных запросах
-• При блокировке всех ключей происходит автоматический сброс
-        """
-        
-        text_widget.setPlainText(info_content)
-    
-    def _reset_api_keys(self, text_widget: QtWidgets.QTextEdit) -> None:
-        """Сброс блокировок всех API ключей"""
-        api_key_rotator.failed_keys.clear()
-        api_key_rotator.current_index = 0
-        logger.info("Все API ключи разблокированы вручную")
-        
-        # Обновляем отображение
-        self._refresh_api_stats(text_widget)
-        
-        # Показываем уведомление
-        QtWidgets.QMessageBox.information(
-            self, 
-            "Ключи разблокированы", 
-            "Все API ключи успешно разблокированы!\nСброшен счетчик на первый ключ."
-        )
 
     # --- Вкладка «Награды за Tx» ---
     def _tab_tx_rewards(self):
@@ -2375,11 +1641,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tx_senders_table.setHorizontalHeaderLabels([
             'Адрес отправителя', 'Всего Tx', 'Награждено', 'Осталось наградить'
         ])
-        header = self.tx_senders_table.horizontalHeader()
-        if header:
-            header.setSectionResizeMode(0, STRETCH_MODE)
+        self.tx_senders_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.tx_senders_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
-        self.tx_senders_table.setContextMenuPolicy(CUSTOM_CONTEXT_MENU)
+        self.tx_senders_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.tx_senders_table.customContextMenuRequested.connect(self._show_tx_senders_menu)
         layout.addWidget(self.tx_senders_table)
         
@@ -2388,11 +1652,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sender_tx_table.setHorizontalHeaderLabels([
             'Транзакция', 'Время', 'Токен', 'Сумма', 'Награждено'
         ])
-        header = self.sender_tx_table.horizontalHeader()
-        if header:
-            header.setSectionResizeMode(0, STRETCH_MODE)
+        self.sender_tx_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.sender_tx_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
-        self.sender_tx_table.setContextMenuPolicy(CUSTOM_CONTEXT_MENU)
+        self.sender_tx_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.sender_tx_table.customContextMenuRequested.connect(self._show_sender_tx_menu)
         layout.addWidget(self.sender_tx_table)
         
@@ -2425,577 +1687,371 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reward_per_tx_mode = checked
         self.cfg.set_reward_per_tx(checked)
         logger.info(f"Режим награждения за каждую транзакцию {'включен' if checked else 'выключен'}")
-    
     def _scan_transactions_for_rewards(self):
-        """Заглушка для сканирования транзакций"""
-        logger.info("Сканирование транзакций для наград...")
-        self._load_tx_senders()
+        """Запуск сканирования транзакций для награждения"""
+        if self.is_searching:
+            return logger.warning("Поиск уже запущен")
+            
+        # Диалог для выбора параметров сканирования
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Сканирование транзакций")
+        dialog_layout = QtWidgets.QVBoxLayout(dialog)
+        
+        form = QtWidgets.QFormLayout()
+        
+        # Адрес системы
+        system_addr = QtWidgets.QLineEdit()
+        system_addr.setPlaceholderText("Адрес системы (0x...)")
+        form.addRow("Адрес системы:", system_addr)
+        
+        # Адрес токена
+        token_addr = QtWidgets.QLineEdit()
+        token_addr.setPlaceholderText("Адрес токена (0x...)")
+        token_addr.setText(PLEX_CONTRACT)
+        form.addRow("Адрес токена:", token_addr)
+        
+        # Точная сумма
+        exact_amount = QtWidgets.QDoubleSpinBox()
+        exact_amount.setRange(0, 1000000)
+        exact_amount.setDecimals(8)
+        exact_amount.setValue(30)
+        form.addRow("Точная сумма:", exact_amount)
+        
+        dialog_layout.addLayout(form)
+        
+        # Кнопки
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        dialog_layout.addWidget(buttons)
+        
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            # Получаем параметры
+            sys_addr = system_addr.text().strip()
+            token = token_addr.text().strip()
+            amount = exact_amount.value()
+            
+            # Проверяем адреса
+            if blockchain_enabled:
+                if not Web3.is_address(sys_addr):
+                    return logger.error("Некорректный адрес системы")
+                if not Web3.is_address(token):
+                    return logger.error("Некорректный адрес токена")
+            
+            # Запускаем поиск в отдельном потоке
+            self.is_searching = True
+            self.stop_search_event.clear()
+            self.update_progress_signal.emit("tx_rewards", 0)
+            
+            # Обновляем UI
+            self.scan_tx_btn.setEnabled(False)
+            self.clear_tx_data_btn.setEnabled(False)
+            
+            threading.Thread(
+                target=self._scan_tx_thread,
+                args=(sys_addr, token, amount),
+                daemon=True
+            ).start()
+            
+            logger.info(f"Запущено сканирование транзакций: {sys_addr}, {token}, {amount}")
     
-    def _clear_tx_data(self):
-        """Очистка данных о транзакциях"""
-        clear_sender_transactions()
-        self._load_tx_senders()
-        logger.info("Данные о транзакциях очищены")
-    
-    def _show_tx_senders_menu(self, position):
-        """Контекстное меню для таблицы отправителей"""
-        menu = QtWidgets.QMenu()
-        view_tx = menu.addAction("Показать транзакции")
-        action = menu.exec_(self.tx_senders_table.viewport().mapToGlobal(position))
-        if action == view_tx:
-            selected = self.tx_senders_table.selectedItems()
-            if selected:
-                row = selected[0].row()
-                sender = self.tx_senders_table.item(row, 0).text()
-                self._show_sender_transactions(sender)
-    
-    def _show_sender_tx_menu(self, position):
-        """Контекстное меню для таблицы транзакций отправителя"""
-        menu = QtWidgets.QMenu()
-        copy_hash = menu.addAction("Копировать хэш")
-        action = menu.exec_(self.sender_tx_table.viewport().mapToGlobal(position))
-        if action == copy_hash:
-            selected = self.sender_tx_table.selectedItems()
-            if selected:
-                row = selected[0].row()
-                tx_hash = self.sender_tx_table.item(row, 0).text()
-                QtWidgets.QApplication.clipboard().setText(tx_hash)
-    
-    def _create_rewards_from_tx(self):
-        """Создание наград на основе транзакций"""
-        logger.info("Создание наград на основе транзакций...")
-    
-    def _send_rewards_for_tx(self):
-        """Отправка наград за транзакции"""
-        logger.info("Отправка наград за транзакции...")
-    
-    def _load_tx_senders(self):
-        """Загрузка данных об отправителях транзакций"""
+    def _scan_tx_thread(self, system_addr, token_addr, amount):
+        """Поток для сканирования транзакций для награждения"""
         try:
+            logger.info(f"Начинаем сканирование транзакций: адрес={system_addr}, токен={token_addr}, сумма={amount}")
+            
+            # Используем расширенную функцию поиска
+            transactions, sender_counter, sender_transactions = search_transactions_paginated(
+                wallet_address=system_addr,
+                token_contract=token_addr,
+                exact_amount=amount,
+                page_size=1000,
+                max_pages=100,
+                delay_seconds=1,
+                stop_flag=self.stop_search_event,
+                track_individual_tx=True  # Включаем отслеживание отдельных транзакций
+            )
+            
+            # Сохраняем данные о транзакциях в базу данных
+            search_time = datetime.now().isoformat()
+            total_tx = 0
+            
+            if sender_transactions:
+                for sender, tx_list in sender_transactions.items():
+                    for tx_info in tx_list:
+                        add_sender_transaction(sender, tx_info, search_time)
+                        total_tx += 1
+            
+            logger.info(f"Сканирование завершено. Сохранено {total_tx} транзакций от {len(sender_counter)} отправителей")
+            
+            # Обновляем UI в основном потоке через сигнал
+            self.update_status_signal.emit("Загрузка отправителей")
+            QtWidgets.QApplication.processEvents()
+            self._load_tx_senders()  # Прямой вызов, так как метод теперь декорирован как слот
+            
+        except Exception as e:
+            logger.error(f"Ошибка при сканировании транзакций: {e}")
+        finally:
+            self.is_searching = False
+            self.update_progress_signal.emit("tx_rewards", 100)
+    
+    @QtCore.pyqtSlot()
+    def _load_tx_senders(self):
+        """Загрузка данных об отправителях и их транзакциях"""
+        try:
+            # Получаем список отправителей и статистику их транзакций
             senders = get_sender_transaction_counts()
+            
+            # Обновляем таблицу
             self.tx_senders_table.setRowCount(0)
-            for sender_data in senders:
+            
+            for sender, tx_count, rewarded_count in senders:
                 row = self.tx_senders_table.rowCount()
                 self.tx_senders_table.insertRow(row)
-                self.tx_senders_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sender_data['sender_addr']))
-                self.tx_senders_table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(sender_data['tx_count'])))
-                self.tx_senders_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(sender_data['rewarded_count'])))
-                unrewarded = sender_data['tx_count'] - sender_data['rewarded_count']
-                self.tx_senders_table.setItem(row, 3, QtWidgets.QTableWidgetItem(str(unrewarded)))
+                
+                # Адрес отправителя
+                self.tx_senders_table.setItem(row, 0, QtWidgets.QTableWidgetItem(sender))
+                
+                # Всего транзакций
+                self.tx_senders_table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(tx_count)))
+                
+                # Награждено транзакций
+                self.tx_senders_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(rewarded_count)))
+                
+                # Осталось наградить
+                self.tx_senders_table.setItem(row, 3, QtWidgets.QTableWidgetItem(str(tx_count - rewarded_count)))
+            
+            logger.info(f"Загружено {self.tx_senders_table.rowCount()} отправителей")
+            
         except Exception as e:
-            logger.error(f"Ошибка при загрузке отправителей: {e}")
+            logger.error(f"Ошибка при загрузке данных об отправителях: {e}")
     
-    def _show_sender_transactions(self, sender_addr):
-        """Отображение транзакций конкретного отправителя"""
+    def _show_tx_senders_menu(self, position):
+        """Показ контекстного меню для таблицы отправителей"""
+        menu = QtWidgets.QMenu()
+        
+        view_tx = menu.addAction("Посмотреть транзакции")
+        add_to_rewards = menu.addAction("Добавить в награды")
+        copy_address = menu.addAction("Копировать адрес")
+        open_bscscan = menu.addAction("Открыть в BscScan")
+        
+        action = menu.exec_(self.tx_senders_table.viewport().mapToGlobal(position))
+        
+        if not action:
+            return
+            
+        selected = self.tx_senders_table.selectedItems()
+        if not selected:
+            return
+            
+        row = selected[0].row()
+        sender = self.tx_senders_table.item(row, 0).text()
+        
+        if action == view_tx:
+            self._load_sender_transactions(sender)
+        
+        elif action == add_to_rewards:
+            if self.reward_per_tx_mode:
+                # В режиме награждения за каждую транзакцию
+                self._add_sender_tx_to_rewards(sender)
+            else:
+                # В обычном режиме - просто добавляем адрес
+                self._add_to_rewards_tab(sender)
+        
+        elif action == copy_address:
+            QtWidgets.QApplication.clipboard().setText(sender)
+            logger.info(f"Адрес скопирован: {sender}")
+        
+        elif action == open_bscscan:
+            url = f"https://bscscan.com/address/{sender}"
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+            logger.info(f"Открыт адрес в BscScan: {sender}")
+    
+    def _load_sender_transactions(self, sender_addr):
+        """Загрузка транзакций выбранного отправителя"""
         try:
+            # Получаем транзакции отправителя
             transactions = get_transactions_by_sender(sender_addr)
+            
+            # Обновляем таблицу
             self.sender_tx_table.setRowCount(0)
-            for tx_data in transactions:
+            
+            for tx_id, tx_hash, timestamp, token, amount, rewarded in transactions:
                 row = self.sender_tx_table.rowCount()
                 self.sender_tx_table.insertRow(row)
-                self.sender_tx_table.setItem(row, 0, QtWidgets.QTableWidgetItem(tx_data['tx_hash']))
-                self.sender_tx_table.setItem(row, 1, QtWidgets.QTableWidgetItem(tx_data['tx_timestamp'] or '-'))
-                self.sender_tx_table.setItem(row, 2, QtWidgets.QTableWidgetItem(tx_data['token_name']))
-                self.sender_tx_table.setItem(row, 3, QtWidgets.QTableWidgetItem(str(tx_data['amount'])))
-                rewarded = "Да" if tx_data['rewarded'] else "Нет"
-                self.sender_tx_table.setItem(row, 4, QtWidgets.QTableWidgetItem(rewarded))
+                
+                # Хэш транзакции
+                tx_item = QtWidgets.QTableWidgetItem(tx_hash[:10] + "..." + tx_hash[-6:])
+                tx_item.setToolTip(tx_hash)
+                tx_item.setData(QtCore.Qt.UserRole, tx_hash)
+                self.sender_tx_table.setItem(row, 0, tx_item)
+                
+                # Время транзакции
+                self.sender_tx_table.setItem(row, 1, QtWidgets.QTableWidgetItem(timestamp))
+                
+                # Токен
+                self.sender_tx_table.setItem(row, 2, QtWidgets.QTableWidgetItem(token))
+                
+                # Сумма
+                self.sender_tx_table.setItem(row, 3, QtWidgets.QTableWidgetItem(str(amount)))
+                
+                # Статус награждения
+                status_item = QtWidgets.QTableWidgetItem("Да" if rewarded else "Нет")
+                status_item.setData(QtCore.Qt.UserRole, rewarded)
+                if rewarded:
+                    status_item.setBackground(QtGui.QColor('#004400'))
+                self.sender_tx_table.setItem(row, 4, status_item)
+            
+            logger.info(f"Загружено {self.sender_tx_table.rowCount()} транзакций отправителя {sender_addr}")
+            
         except Exception as e:
             logger.error(f"Ошибка при загрузке транзакций отправителя: {e}")
     
-    # Заглушки для остальных вкладок
-    def _tab_analyze(self):
-        """Вкладка анализа"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        layout.addWidget(QtWidgets.QLabel("Вкладка анализа"))
-        return w
+    def _show_sender_tx_menu(self, position):
+        """Показ контекстного меню для таблицы транзакций отправителя"""
+        menu = QtWidgets.QMenu()
+        
+        open_tx = menu.addAction("Открыть транзакцию в BscScan")
+        copy_tx = menu.addAction("Копировать хэш")
+        mark_rewarded = menu.addAction("Отметить как награжденную")
+        add_tx_to_rewards = menu.addAction("Добавить в награды")
+        
+        action = menu.exec_(self.sender_tx_table.viewport().mapToGlobal(position))
+        
+        if not action:
+            return
+            
+        selected = self.sender_tx_table.selectedItems()
+        if not selected:
+            return
+            
+        row = selected[0].row()
+        tx_hash = self.sender_tx_table.item(row, 0).data(QtCore.Qt.UserRole)
+        is_rewarded = self.sender_tx_table.item(row, 4).data(QtCore.Qt.UserRole)
+        
+        if action == open_tx:
+            url = f"https://bscscan.com/tx/{tx_hash}"
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+            logger.info(f"Открыта транзакция в BscScan: {tx_hash}")
+        
+        elif action == copy_tx:
+            QtWidgets.QApplication.clipboard().setText(tx_hash)
+            logger.info(f"Хэш транзакции скопирован: {tx_hash}")
+        
+        elif action == mark_rewarded:
+            if not is_rewarded:
+                mark_transaction_rewarded(tx_hash)
+                logger.info(f"Транзакция {tx_hash} отмечена как награжденная")
+                
+                # Обновляем таблицу
+                status_item = QtWidgets.QTableWidgetItem("Да")
+                status_item.setData(QtCore.Qt.UserRole, 1)
+                status_item.setBackground(QtGui.QColor('#004400'))
+                self.sender_tx_table.setItem(row, 4, status_item)
+                
+                # Обновляем данные об отправителях
+                selected_row = self.tx_senders_table.currentRow()
+                if selected_row >= 0:
+                    sender = self.tx_senders_table.item(selected_row, 0).text()
+                    self._load_tx_senders()
+                    
+                    # Пытаемся восстановить выделение
+                    for i in range(self.tx_senders_table.rowCount()):
+                        if self.tx_senders_table.item(i, 0).text() == sender:
+                            self.tx_senders_table.selectRow(i)
+                            break
+        
+        elif action == add_tx_to_rewards:
+            # Получаем адрес отправителя из текущего выбора в таблице отправителей
+            selected_row = self.tx_senders_table.currentRow()
+            if selected_row >= 0:
+                sender = self.tx_senders_table.item(selected_row, 0).text()
+                self._add_tx_to_rewards(sender, tx_hash)
     
-    def _tab_paginated_search(self):
-        """Вкладка поиска транзакций"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        layout.addWidget(QtWidgets.QLabel("Вкладка поиска транзакций"))
-        self.radio_exact = QtWidgets.QRadioButton("Точная сумма")
-        self.radio_range = QtWidgets.QRadioButton("Диапазон")
-        self.spin_amt = QtWidgets.QDoubleSpinBox()
-        self.spin_amt_from = QtWidgets.QDoubleSpinBox()
-        self.spin_amt_to = QtWidgets.QDoubleSpinBox()
-        layout.addWidget(self.radio_exact)
-        layout.addWidget(self.radio_range)
-        self.progress_search = QtWidgets.QProgressBar()
-        layout.addWidget(self.progress_search)
-        return w
-    
-    def _tab_rewards(self):
-        """Вкладка наград"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        layout.addWidget(QtWidgets.QLabel("Вкладка наград"))
-        self.progress_send = QtWidgets.QProgressBar()
-        layout.addWidget(self.progress_send)
-        return w
-    
-    def _tab_direct_send(self):
-        """Вкладка прямой отправки"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        layout.addWidget(QtWidgets.QLabel("Вкладка прямой отправки"))
-        self.direct_send_progress = QtWidgets.QProgressBar()
-        layout.addWidget(self.direct_send_progress)
-        return w
-    
-    def _direct_send_periodic_send(self):
-        """Периодическая отправка"""
-        pass
-    
-    def _tab_ds(self):
-        """Вкладка дополнительных сервисов"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        layout.addWidget(QtWidgets.QLabel("Вкладка дополнительных сервисов"))
-        return w
-    
-    def _tab_history(self):
-        """Вкладка истории"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        layout.addWidget(QtWidgets.QLabel("Вкладка истории"))
-        self.progress = QtWidgets.QProgressBar()
-        layout.addWidget(self.progress)
-        return w
-    
-    def _tab_found_tx(self):
-        """Вкладка найденных транзакций"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        layout.addWidget(QtWidgets.QLabel("Вкладка найденных транзакций"))
-        return w
-    
-    def _tab_settings(self):
-        """Вкладка настроек"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        layout.addWidget(QtWidgets.QLabel("Вкладка настроек"))
-        return w
-    
-    def _update_search_results(self, transactions, sender_counter, sender_transactions):
-        """Обновление результатов поиска"""
-        logger.info(f"Найдено {len(transactions)} транзакций")
-    
-    def _update_progress_item(self, row, current, total):
-        """Обновление прогресса элемента"""
-        pass
-    
-    def _update_mass_statistics(self, sent, errors, gas_spent, total_amount):
-        """Обновление статистики массовой рассылки"""
-        logger.info(f"Отправлено: {sent}, Ошибок: {errors}, Газ: {gas_spent}, Сумма: {total_amount}")
-    
-    def _mass_distribution_finished(self):
-        """Завершение массовой рассылки"""
-        logger.info("Массовая рассылка завершена")
-    
-    def _mass_stop_distribution(self):
-        """Остановка массовой рассылки"""
-        self.mass_distribution_active = False
-        logger.info("Массовая рассылка остановлена")
-
-
-    def _tab_paginated_search(self):
-        """Вкладка поиска транзакций с постраничной загрузкой"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        
-        # Группа поиска
-        search_group = QtWidgets.QGroupBox("Поиск транзакций")
-        search_layout = QtWidgets.QFormLayout(search_group)
-        
-        # Адрес кошелька
-        self.search_wallet_edit = QtWidgets.QLineEdit()
-        self.search_wallet_edit.setPlaceholderText("0x...")
-        search_layout.addRow("Адрес кошелька:", self.search_wallet_edit)
-        
-        # Адрес токена
-        self.search_token_edit = QtWidgets.QLineEdit()
-        self.search_token_edit.setPlaceholderText("0x... (необязательно)")
-        search_layout.addRow("Адрес токена:", self.search_token_edit)
-        
-        # Точная сумма
-        self.search_amount_edit = QtWidgets.QLineEdit()
-        self.search_amount_edit.setPlaceholderText("Точная сумма (необязательно)")
-        search_layout.addRow("Точная сумма:", self.search_amount_edit)
-        
-        # Кнопки поиска
-        search_buttons = QtWidgets.QHBoxLayout()
-        self.search_start_btn = QtWidgets.QPushButton("Начать поиск")
-        self.search_start_btn.clicked.connect(self._start_paginated_search)
-        search_buttons.addWidget(self.search_start_btn)
-        
-        self.search_stop_btn = QtWidgets.QPushButton("Остановить")
-        self.search_stop_btn.clicked.connect(self._stop_paginated_search)
-        self.search_stop_btn.setEnabled(False)
-        search_buttons.addWidget(self.search_stop_btn)
-        
-        search_layout.addRow("", search_buttons)
-        layout.addWidget(search_group)
-        
-        # Таблица результатов
-        self.search_results_table = QtWidgets.QTableWidget(0, 5)
-        self.search_results_table.setHorizontalHeaderLabels([
-            'Хэш', 'От', 'К', 'Сумма', 'Время'
-        ])
-        self.search_results_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        layout.addWidget(self.search_results_table)
-        
-        # Статус поиска
-        self.search_status_label = QtWidgets.QLabel("Готов к поиску")
-        layout.addWidget(self.search_status_label)
-        
-        return w
-
-    def _tab_rewards(self):
-        """Вкладка системы наград"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        
-        # Группа настроек наград
-        settings_group = QtWidgets.QGroupBox("Настройки наград")
-        settings_layout = QtWidgets.QFormLayout(settings_group)
-        
-        # Тип награды
-        reward_type_layout = QtWidgets.QHBoxLayout()
-        self.reward_plex_radio = QtWidgets.QRadioButton('PLEX ONE')
-        self.reward_usdt_radio = QtWidgets.QRadioButton('USDT')
-        self.reward_both_radio = QtWidgets.QRadioButton('Оба токена')
-        self.reward_both_radio.setChecked(True)
-        
-        reward_type_layout.addWidget(self.reward_plex_radio)
-        reward_type_layout.addWidget(self.reward_usdt_radio)
-        reward_type_layout.addWidget(self.reward_both_radio)
-        settings_layout.addRow("Тип награды:", reward_type_layout)
-        
-        # Размеры наград
-        self.reward_plex_size = QtWidgets.QDoubleSpinBox()
-        self.reward_plex_size.setRange(0.1, 1000)
-        self.reward_plex_size.setValue(3.0)
-        self.reward_plex_size.setDecimals(1)
-        settings_layout.addRow("Размер PLEX:", self.reward_plex_size)
-        
-        self.reward_usdt_size = QtWidgets.QDoubleSpinBox()
-        self.reward_usdt_size.setRange(0.1, 10000)
-        self.reward_usdt_size.setValue(1.0)
-        self.reward_usdt_size.setDecimals(2)
-        settings_layout.addRow("Размер USDT:", self.reward_usdt_size)
-        
-        layout.addWidget(settings_group)
-        
-        # Таблица наград
-        self.table_rewards = QtWidgets.QTableWidget(0, 3)
-        self.table_rewards.setHorizontalHeaderLabels([
-            'Адрес получателя', 'PLEX ONE', 'USDT'
-        ])
-        self.table_rewards.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        layout.addWidget(self.table_rewards)
-        
-        # Кнопки управления
-        buttons_layout = QtWidgets.QHBoxLayout()
-        
-        self.send_rewards_btn = QtWidgets.QPushButton("Отправить награды")
-        self.send_rewards_btn.clicked.connect(self._send_rewards)
-        buttons_layout.addWidget(self.send_rewards_btn)
-        
-        self.clear_rewards_btn = QtWidgets.QPushButton("Очистить список")
-        self.clear_rewards_btn.clicked.connect(self._clear_rewards)
-        buttons_layout.addWidget(self.clear_rewards_btn)
-        
-        layout.addLayout(buttons_layout)
-        
-        return w
-
-    def _tab_direct_send(self):
-        """Вкладка прямой отправки токенов"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        
-        # Группа отправки
-        send_group = QtWidgets.QGroupBox("Прямая отправка")
-        send_layout = QtWidgets.QFormLayout(send_group)
-        
-        # Адрес получателя
-        self.direct_address_edit = QtWidgets.QLineEdit()
-        self.direct_address_edit.setPlaceholderText("0x...")
-        send_layout.addRow("Адрес получателя:", self.direct_address_edit)
-        
-        # Тип токена
-        token_layout = QtWidgets.QHBoxLayout()
-        self.direct_plex_radio = QtWidgets.QRadioButton('PLEX ONE')
-        self.direct_usdt_radio = QtWidgets.QRadioButton('USDT')
-        self.direct_bnb_radio = QtWidgets.QRadioButton('BNB')
-        self.direct_plex_radio.setChecked(True)
-        
-        token_layout.addWidget(self.direct_plex_radio)
-        token_layout.addWidget(self.direct_usdt_radio)
-        token_layout.addWidget(self.direct_bnb_radio)
-        send_layout.addRow("Токен:", token_layout)
-        
-        # Сумма
-        self.direct_amount_edit = QtWidgets.QDoubleSpinBox()
-        self.direct_amount_edit.setRange(0.00000001, 1000000)
-        self.direct_amount_edit.setValue(1.0)
-        self.direct_amount_edit.setDecimals(8)
-        send_layout.addRow("Сумма:", self.direct_amount_edit)
-        
-        # Кнопка отправки
-        self.direct_send_btn = QtWidgets.QPushButton("Отправить")
-        self.direct_send_btn.clicked.connect(self._direct_send)
-        send_layout.addRow("", self.direct_send_btn)
-        
-        layout.addWidget(send_group)
-        
-        # Статус отправки
-        self.direct_status_label = QtWidgets.QLabel("Готов к отправке")
-        layout.addWidget(self.direct_status_label)
-        
-        return w
-
-    def _tab_ds(self):
-        """Вкладка дополнительных сервисов (ДС)"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        
-        # Заголовок
-        title_label = QtWidgets.QLabel("🚀 ДС - Дополнительные Сервисы")
-        title_label.setStyleSheet("""
-            QLabel {
-                font-size: 20px;
-                font-weight: bold;
-                color: #1976D2;
-                padding: 20px;
-                text-align: center;
-            }
-        """)
-        title_label.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(title_label)
-        
-        # Информация о PLEX ONE
-        info_group = QtWidgets.QGroupBox("ℹ️ Информация о PLEX ONE")
-        info_layout = QtWidgets.QFormLayout(info_group)
-        
-        info_layout.addRow("Название:", QtWidgets.QLabel("PLEX ONE"))
-        info_layout.addRow("Символ:", QtWidgets.QLabel("PLEX"))
-        info_layout.addRow("Decimals:", QtWidgets.QLabel("9"))
-        info_layout.addRow("Total Supply:", QtWidgets.QLabel("12,600,000 PLEX"))
-        info_layout.addRow("Контракт:", QtWidgets.QLabel("0xdf179b6cAdBC61FFD86A3D2e55f6d6e083ade6c1"))
-        info_layout.addRow("Сеть:", QtWidgets.QLabel("Binance Smart Chain"))
-        
-        layout.addWidget(info_group)
-        
-        # Быстрые ссылки
-        links_group = QtWidgets.QGroupBox("🔗 Быстрые ссылки")
-        links_layout = QtWidgets.QVBoxLayout(links_group)
-        
-        buttons_layout = QtWidgets.QHBoxLayout()
-        
-        bscscan_btn = QtWidgets.QPushButton("🔍 BSCScan")
-        bscscan_btn.clicked.connect(lambda: self._open_url(
-            "https://bscscan.com/address/0xdf179b6cAdBC61FFD86A3D2e55f6d6e083ade6c1"
-        ))
-        buttons_layout.addWidget(bscscan_btn)
-        
-        pancake_btn = QtWidgets.QPushButton("🥞 PancakeSwap")
-        pancake_btn.clicked.connect(lambda: self._open_url(
-            "https://pancakeswap.finance/swap"
-            "?outputCurrency=0xdf179b6cAdBC61FFD86A3D2e55f6d6e083ade6c1"
-            "&inputCurrency=0x55d398326f99059fF775485246999027B3197955"
-        ))
-        buttons_layout.addWidget(pancake_btn)
-        
-        chart_btn = QtWidgets.QPushButton("📈 График")
-        chart_btn.clicked.connect(lambda: self._open_url(
-            "https://www.geckoterminal.com/ru/bsc/pools/0x41d9650faf3341cbf8947fd8063a1fc88dbf1889"
-        ))
-        buttons_layout.addWidget(chart_btn)
-        
-        links_layout.addLayout(buttons_layout)
-        layout.addWidget(links_group)
-        
-        return w
-
-    def _tab_history(self):
-        """Вкладка истории транзакций"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        
-        # Таблица истории
-        self.history_table = QtWidgets.QTableWidget(0, 5)
-        self.history_table.setHorizontalHeaderLabels([
-            'Тип', 'Адрес', 'Сумма', 'Хэш', 'Время'
-        ])
-        self.history_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        layout.addWidget(self.history_table)
-        
-        # Кнопки управления
-        buttons_layout = QtWidgets.QHBoxLayout()
-        
-        self.refresh_history_btn = QtWidgets.QPushButton("Обновить")
-        self.refresh_history_btn.clicked.connect(self._load_history)
-        buttons_layout.addWidget(self.refresh_history_btn)
-        
-        self.export_history_btn = QtWidgets.QPushButton("Экспорт")
-        self.export_history_btn.clicked.connect(self._export_history)
-        buttons_layout.addWidget(self.export_history_btn)
-        
-        layout.addLayout(buttons_layout)
-        
-        return w
-
-    def _tab_found_tx(self):
-        """Вкладка найденных транзакций"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        
-        # Таблица найденных транзакций
-        self.found_tx_table = QtWidgets.QTableWidget(0, 6)
-        self.found_tx_table.setHorizontalHeaderLabels([
-            'Хэш', 'Отправитель', 'Получатель', 'Сумма', 'Токен', 'Время'
-        ])
-        self.found_tx_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        layout.addWidget(self.found_tx_table)
-        
-        # Кнопки управления
-        buttons_layout = QtWidgets.QHBoxLayout()
-        
-        self.add_to_rewards_btn = QtWidgets.QPushButton("Добавить в награды")
-        self.add_to_rewards_btn.clicked.connect(self._add_found_to_rewards)
-        buttons_layout.addWidget(self.add_to_rewards_btn)
-        
-        self.clear_found_btn = QtWidgets.QPushButton("Очистить")
-        self.clear_found_btn.clicked.connect(self._clear_found_tx)
-        buttons_layout.addWidget(self.clear_found_btn)
-        
-        layout.addLayout(buttons_layout)
-        
-        return w
-
-    def _tab_settings(self):
-        """Вкладка настроек приложения"""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        
-        # Группа общих настроек
-        general_group = QtWidgets.QGroupBox("Общие настройки")
-        general_layout = QtWidgets.QFormLayout(general_group)
-        
-        # Цена газа
-        self.gas_price_spin = QtWidgets.QDoubleSpinBox()
-        self.gas_price_spin.setRange(0.1, 500)
-        self.gas_price_spin.setDecimals(1)
-        self.gas_price_spin.setSingleStep(0.1)
-        self.gas_price_spin.setValue(float(self.cfg.get_gas_price()))
-        self.gas_price_spin.valueChanged.connect(self._update_gas_price)
-        general_layout.addRow("Цена газа (Gwei):", self.gas_price_spin)
-        
-        # Количество повторений серии
-        self.repeat_count_spin = QtWidgets.QSpinBox()
-        self.repeat_count_spin.setRange(1, 100)
-        self.repeat_count_spin.setValue(self.cfg.get_repeat_count())
-        self.repeat_count_spin.valueChanged.connect(self._update_repeat_count)
-        general_layout.addRow("Количество повторений серии:", self.repeat_count_spin)
-        
-        # Очистка кэша
-        btn_clear_cache = QtWidgets.QPushButton("Очистить кэш")
-        btn_clear_cache.clicked.connect(self._clear_cache)
-        general_layout.addRow("Кэширование:", btn_clear_cache)
-        
-        layout.addWidget(general_group)
-        
-        # Группа настроек блокчейна
-        blockchain_group = QtWidgets.QGroupBox("Настройки блокчейна")
-        blockchain_layout = QtWidgets.QFormLayout(blockchain_group)
-        
-        # Статус блокчейна
-        blockchain_status = "Включен" if blockchain_enabled else "Отключен"
-        blockchain_layout.addRow("Статус блокчейна:", QtWidgets.QLabel(blockchain_status))
-        
-        # Список RPC узлов
-        rpc_list = QtWidgets.QListWidget()
-        for node in RPC_NODES:
-            rpc_list.addItem(node)
-        blockchain_layout.addRow("RPC узлы:", rpc_list)
-        
-        # Тест подключения
-        btn_test_conn = QtWidgets.QPushButton("Проверить подключение")
-        btn_test_conn.clicked.connect(self._test_blockchain_connection)
-        blockchain_layout.addRow("", btn_test_conn)
-        
-        layout.addWidget(blockchain_group)
-        
-        return w
-
-    # Реальные методы для вкладок
-    def _start_paginated_search(self):
-        """Запуск постраничного поиска транзакций"""
+    def _add_sender_tx_to_rewards(self, sender_addr):
+        """Добавление транзакций отправителя в таблицу наград"""
         try:
-            wallet_addr = self.search_wallet_edit.text().strip()
-            token_addr = self.search_token_edit.text().strip()
-            amount = self.search_amount_edit.text().strip()
+            # Получаем ненагражденные транзакции отправителя
+            transactions = get_unrewarded_transactions(sender_addr)
             
-            if not wallet_addr:
-                QtWidgets.QMessageBox.warning(self, 'Ошибка', 'Введите адрес кошелька')
-                return
+            if not transactions:
+                return logger.warning(f"Нет ненагражденных транзакций для {sender_addr}")
             
-            # Запускаем поиск в отдельном потоке
-            self.search_thread = threading.Thread(
-                target=self._search_transactions_thread,
-                args=(wallet_addr, token_addr, amount),
-                daemon=True
-            )
-            self.search_thread.start()
+            # Сохраняем текущее состояние таблицы наград
+            self._save_rewards_state()
             
-            self.search_start_btn.setEnabled(False)
-            self.search_stop_btn.setEnabled(True)
-            self.search_status_label.setText("Поиск запущен...")
+            # Добавляем каждую транзакцию в таблицу наград
+            for tx_id, sender, tx_hash, timestamp, token, amount in transactions:
+                row = self.table_rewards.rowCount()
+                self.table_rewards.insertRow(row)
+                
+                # Адрес отправителя
+                addr_item = QtWidgets.QTableWidgetItem(sender)
+                addr_item.setData(QtCore.Qt.UserRole, tx_hash)
+                self.table_rewards.setItem(row, 0, addr_item)
+                
+                # PLEX - значение по умолчанию
+                plex_item = QtWidgets.QTableWidgetItem("3")
+                plex_item.setFlags(plex_item.flags() | QtCore.Qt.ItemIsEditable)
+                self.table_rewards.setItem(row, 1, plex_item)
+                
+                # USDT - пустое значение по умолчанию
+                usdt_item = QtWidgets.QTableWidgetItem("")
+                usdt_item.setFlags(usdt_item.flags() | QtCore.Qt.ItemIsEditable)
+                self.table_rewards.setItem(row, 2, usdt_item)
+            
+            logger.info(f"Добавлено {len(transactions)} транзакций отправителя {sender_addr} в таблицу наград")
             
         except Exception as e:
-            logger.error(f"Ошибка запуска поиска: {e}")
+            logger.error(f"Ошибка при добавлении транзакций в награды: {e}")
     
-    def _stop_paginated_search(self):
-        """Остановка поиска транзакций"""
-        self.stop_search_event.set()
-        self.search_start_btn.setEnabled(True)
-        self.search_stop_btn.setEnabled(False)
-        self.search_status_label.setText("Поиск остановлен")
-    
-    def _search_transactions_thread(self, wallet_addr, token_addr, amount):
-        """Поток поиска транзакций"""
+    def _add_tx_to_rewards(self, sender_addr, tx_hash):
+        """Добавление одной конкретной транзакции в таблицу наград"""
         try:
-            # Используем функцию поиска из модуля
-            transactions, _, _ = search_transactions_paginated(
-                wallet_address=wallet_addr,
-                token_contract=token_addr if token_addr else None,
-                exact_amount=float(amount) if amount else None,
-                page_size=100,
-                max_pages=10,
-                delay_seconds=1,
-                stop_flag=self.stop_search_event
-            )
+            # Проверяем, не добавлена ли уже эта транзакция в таблицу наград
+            for row in range(self.table_rewards.rowCount()):
+                item = self.table_rewards.item(row, 0)
+                if item and item.data(QtCore.Qt.UserRole) == tx_hash:
+                    logger.warning(f"Транзакция {tx_hash} уже добавлена в таблицу наград")
+                    return
             
-            # Обновляем UI с результатами
-            self.update_search_results.emit(transactions)
+            # Добавляем новую строку
+            row = self.table_rewards.rowCount()
+            self.table_rewards.insertRow(row)
+            
+            # Адрес отправителя
+            addr_item = QtWidgets.QTableWidgetItem(sender_addr)
+            addr_item.setData(QtCore.Qt.UserRole, tx_hash)
+            self.table_rewards.setItem(row, 0, addr_item)
+            
+            # PLEX - значение по умолчанию
+            plex_item = QtWidgets.QTableWidgetItem("3")
+            plex_item.setFlags(plex_item.flags() | QtCore.Qt.ItemIsEditable)
+            self.table_rewards.setItem(row, 1, plex_item)
+            
+            # USDT - пустое значение по умолчанию
+            usdt_item = QtWidgets.QTableWidgetItem("")
+            usdt_item.setFlags(usdt_item.flags() | QtCore.Qt.ItemIsEditable)
+            self.table_rewards.setItem(row, 2, usdt_item)
+            
+            logger.info(f"Транзакция {tx_hash} добавлена в таблицу наград")
             
         except Exception as e:
-            logger.error(f"Ошибка поиска транзакций: {e}")
-    
-    def _send_rewards(self):
-        """Отправка наград из таблицы"""
+            logger.error(f"Ошибка при добавлении транзакции в награды: {e}")
+    def _create_rewards_from_tx(self):
+        """Создание наград для всех ненагражденных транзакций"""
         try:
-            if self.table_rewards.rowCount() == 0:
-                QtWidgets.QMessageBox.warning(self, 'Ошибка', 'Таблица наград пуста')
-                return
+            # Получаем ненагражденные транзакции
+            transactions = get_unrewarded_transactions()
+            
+            if not transactions:
+                return logger.warning("Нет ненагражденных транзакций")
             
             # Запрашиваем подтверждение
             reply = QtWidgets.QMessageBox.question(
-                self, 'Подтверждение',
-                f'Отправить награды для {self.table_rewards.rowCount()} адресов?',
+                self, 'Подтверждение', 
+                f'Создать награды для {len(transactions)} ненагражденных транзакций?',
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                 QtWidgets.QMessageBox.No
             )
@@ -3003,260 +2059,119 @@ class MainWindow(QtWidgets.QMainWindow):
             if reply != QtWidgets.QMessageBox.Yes:
                 return
             
-            # Собираем данные из таблицы
-            rewards_data = []
-            for row in range(self.table_rewards.rowCount()):
-                address = self.table_rewards.item(row, 0).text()
-                plex_amount = float(self.table_rewards.item(row, 1).text() or 0)
-                usdt_amount = float(self.table_rewards.item(row, 2).text() or 0)
+            # Определяем тип и размер награды
+            use_plex = self.reward_plex_radio.isChecked() or self.reward_both_radio.isChecked()
+            use_usdt = self.reward_usdt_radio.isChecked() or self.reward_both_radio.isChecked()
+            plex_size = self.reward_plex_size.value() if use_plex else 0
+            usdt_size = self.reward_usdt_size.value() if use_usdt else 0
+            
+            # Сохраняем текущее состояние таблицы наград
+            self._save_rewards_state()
+            
+            # Очищаем текущую таблицу наград
+            self.table_rewards.setRowCount(0)
+            
+            # Добавляем каждую транзакцию в таблицу наград
+            for tx_id, sender, tx_hash, timestamp, token, amount in transactions:
+                row = self.table_rewards.rowCount()
+                self.table_rewards.insertRow(row)
                 
-                if plex_amount > 0 or usdt_amount > 0:
-                    rewards_data.append((address, plex_amount, usdt_amount))
-            
-            # Запускаем отправку в отдельном потоке
-            threading.Thread(
-                target=self._send_rewards_thread,
-                args=(rewards_data,),
-                daemon=True
-            ).start()
-            
-        except Exception as e:
-            logger.error(f"Ошибка отправки наград: {e}")
-    
-    def _send_rewards_thread(self, rewards_data):
-        """Поток отправки наград"""
-        try:
-            total_sent = 0
-            total_errors = 0
-            
-            for address, plex_amount, usdt_amount in rewards_data:
-                try:
-                    # Отправляем PLEX
-                    if plex_amount > 0:
-                        self._send_token(address, plex_amount, 'plex')
-                        total_sent += 1
-                    
-                    # Отправляем USDT
-                    if usdt_amount > 0:
-                        self._send_token(address, usdt_amount, 'usdt')
-                        total_sent += 1
-                    
-                    time.sleep(2)  # Пауза между отправками
-                    
-                except Exception as e:
-                    total_errors += 1
-                    logger.error(f"Ошибка отправки награды на {address}: {e}")
-            
-            # Обновляем UI
-            QtWidgets.QMessageBox.information(
-                self, 'Завершено',
-                f'Отправлено: {total_sent}, Ошибок: {total_errors}'
-            )
-            
-        except Exception as e:
-            logger.error(f"Ошибка в потоке отправки наград: {e}")
-    
-    def _clear_rewards(self):
-        """Очистка таблицы наград"""
-        self.table_rewards.setRowCount(0)
-        logger.info("Таблица наград очищена")
-    
-    def _direct_send(self):
-        """Прямая отправка токенов"""
-        try:
-            address = self.direct_address_edit.text().strip()
-            amount = self.direct_amount_edit.value()
-            
-            if not address:
-                QtWidgets.QMessageBox.warning(self, 'Ошибка', 'Введите адрес получателя')
-                return
-            
-            # Определяем тип токена
-            if self.direct_plex_radio.isChecked():
-                token_type = 'plex'
-            elif self.direct_usdt_radio.isChecked():
-                token_type = 'usdt'
-            else:
-                token_type = 'bnb'
-            
-            # Отправляем в отдельном потоке
-            threading.Thread(
-                target=self._direct_send_thread,
-                args=(address, amount, token_type),
-                daemon=True
-            ).start()
-            
-        except Exception as e:
-            logger.error(f"Ошибка прямой отправки: {e}")
-    
-    def _direct_send_thread(self, address, amount, token_type):
-        """Поток прямой отправки"""
-        try:
-            self.direct_status_label.setText("Отправка...")
-            
-            if token_type == 'bnb':
-                result = self._send_bnb(address, amount)
-            else:
-                result = self._send_token(address, amount, token_type)
-            
-            if result:
-                self.direct_status_label.setText("Отправлено успешно!")
-                logger.info(f"Прямая отправка успешна: {amount} {token_type} на {address}")
-            else:
-                self.direct_status_label.setText("Ошибка отправки")
+                # Адрес отправителя
+                addr_item = QtWidgets.QTableWidgetItem(sender)
+                addr_item.setData(QtCore.Qt.UserRole, tx_hash)
+                self.table_rewards.setItem(row, 0, addr_item)
                 
-        except Exception as e:
-            self.direct_status_label.setText("Ошибка отправки")
-            logger.error(f"Ошибка прямой отправки: {e}")
-    
-    def _open_url(self, url):
-        """Открытие URL в браузере"""
-        import webbrowser
-        webbrowser.open(url)
-        logger.info(f"Открыт URL: {url}")
-    
-    def _load_history(self):
-        """Загрузка истории транзакций"""
-        try:
-            # Получаем историю из БД
-            history = get_history()
-            
-            # Обновляем таблицу
-            self.history_table.setRowCount(0)
-            
-            for tx_type, address, amount, tx_hash, timestamp in history:
-                row = self.history_table.rowCount()
-                self.history_table.insertRow(row)
+                # PLEX - значение из настроек
+                plex_item = QtWidgets.QTableWidgetItem(str(plex_size) if plex_size > 0 else "")
+                plex_item.setFlags(plex_item.flags() | QtCore.Qt.ItemIsEditable)
+                self.table_rewards.setItem(row, 1, plex_item)
                 
-                self.history_table.setItem(row, 0, QtWidgets.QTableWidgetItem(tx_type))
-                self.history_table.setItem(row, 1, QtWidgets.QTableWidgetItem(address))
-                self.history_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(amount)))
-                self.history_table.setItem(row, 3, QtWidgets.QTableWidgetItem(tx_hash))
-                self.history_table.setItem(row, 4, QtWidgets.QTableWidgetItem(timestamp))
+                # USDT - значение из настроек
+                usdt_item = QtWidgets.QTableWidgetItem(str(usdt_size) if usdt_size > 0 else "")
+                usdt_item.setFlags(usdt_item.flags() | QtCore.Qt.ItemIsEditable)
+                self.table_rewards.setItem(row, 2, usdt_item)
             
-            logger.info(f"Загружено {len(history)} записей истории")
-            
-        except Exception as e:
-            logger.error(f"Ошибка загрузки истории: {e}")
-    
-    def _export_history(self):
-        """Экспорт истории в CSV"""
-        try:
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self, 'Экспорт истории', '', 'CSV Files (*.csv)'
-            )
-            
-            if path:
-                history = get_history()
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write('Тип,Адрес,Сумма,Хэш,Время\n')
-                    for tx_type, address, amount, tx_hash, timestamp in history:
-                        f.write(f'{tx_type},{address},{amount},{tx_hash},{timestamp}\n')
-                
-                logger.info(f"История экспортирована в {path}")
-                
-        except Exception as e:
-            logger.error(f"Ошибка экспорта истории: {e}")
-    
-    def _add_found_to_rewards(self):
-        """Добавление найденных транзакций в награды"""
-        try:
-            selected_rows = set(item.row() for item in self.found_tx_table.selectedItems())
-            
-            if not selected_rows:
-                QtWidgets.QMessageBox.warning(self, 'Ошибка', 'Выберите транзакции')
-                return
-            
-            for row in selected_rows:
-                sender = self.found_tx_table.item(row, 1).text()
-                self._add_to_rewards_tab(sender)
-            
-            logger.info(f"Добавлено {len(selected_rows)} транзакций в награды")
+            logger.info(f"Создано {len(transactions)} наград для ненагражденных транзакций")
             
         except Exception as e:
-            logger.error(f"Ошибка добавления в награды: {e}")
+            logger.error(f"Ошибка при создании наград: {e}")
     
-    def _clear_found_tx(self):
-        """Очистка таблицы найденных транзакций"""
-        self.found_tx_table.setRowCount(0)
-        logger.info("Таблица найденных транзакций очищена")
+    def _send_rewards_for_tx(self):
+        """Отправка наград для выбранных транзакций"""
+        if not self.table_rewards.rowCount():
+            return logger.warning("Нет наград для отправки")
+        
+        # Проверяем наличие транзакций в таблице наград
+        has_tx_data = False
+        for row in range(self.table_rewards.rowCount()):
+            tx_hash = self.table_rewards.item(row, 0).data(QtCore.Qt.UserRole)
+            if tx_hash:
+                has_tx_data = True
+                break
+        
+        if not has_tx_data:
+            return logger.warning("В таблице нет наград за транзакции")
+        
+        # Запускаем стандартную отправку
+        self._start_sending(mark_rewarded=True)
     
-    def _update_gas_price(self, value):
-        """Обновление цены газа"""
-        self.cfg.set_gas_price(value)
-        logger.info(f"Цена газа установлена: {value} Gwei")
-    
-    def _update_repeat_count(self, value):
-        """Обновление количества повторений"""
-        self.cfg.set_repeat_count(value)
-        logger.info(f"Количество повторений установлено: {value}")
-    
-    def _clear_cache(self):
-        """Очистка кэша"""
-        try:
-            count = cache.clear()
-            logger.info(f"Очищено {count} элементов кэша")
-            QtWidgets.QMessageBox.information(self, 'Кэш очищен', f'Очищено {count} элементов')
-        except Exception as e:
-            logger.error(f"Ошибка очистки кэша: {e}")
-    
-    def _test_blockchain_connection(self):
-        """Тест подключения к блокчейну"""
-        try:
-            if not blockchain_enabled:
-                QtWidgets.QMessageBox.warning(self, 'Блокчейн отключен', 'Функции блокчейна недоступны')
-                return
-            
-            w3 = self.rpc.web3()
-            if w3.is_connected():
-                block = w3.eth.block_number
-                QtWidgets.QMessageBox.information(
-                    self, 'Подключение успешно',
-                    f'Подключение к BSC установлено\nТекущий блок: {block}'
-                )
-            else:
-                QtWidgets.QMessageBox.warning(self, 'Ошибка подключения', 'Не удалось подключиться к BSC')
-                
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, 'Ошибка', f'Ошибка тестирования: {e}')
-    
-    def _add_to_rewards_tab(self, address):
-        """Добавление адреса в таблицу наград"""
-        try:
-            row = self.table_rewards.rowCount()
-            self.table_rewards.insertRow(row)
-            
-            # Адрес
-            self.table_rewards.setItem(row, 0, QtWidgets.QTableWidgetItem(address))
-            
-            # PLEX (по умолчанию)
-            plex_item = QtWidgets.QTableWidgetItem("3")
-            plex_item.setFlags(plex_item.flags() | QtCore.Qt.ItemIsEditable)
-            self.table_rewards.setItem(row, 1, plex_item)
-            
-            # USDT (пусто)
-            usdt_item = QtWidgets.QTableWidgetItem("")
-            usdt_item.setFlags(usdt_item.flags() | QtCore.Qt.ItemIsEditable)
-            self.table_rewards.setItem(row, 2, usdt_item)
-            
-        except Exception as e:
-            logger.error(f"Ошибка добавления в награды: {e}")
+    def _clear_tx_data(self):
+        """Очистка всех данных о транзакциях"""
+        reply = QtWidgets.QMessageBox.question(
+            self, 'Подтверждение', 
+            'Очистить все данные о транзакциях отправителей?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No
+        )
+        
+        if reply == QtWidgets.QMessageBox.Yes:
+            count = clear_sender_transactions()
+            self.tx_senders_table.setRowCount(0)
+            self.sender_tx_table.setRowCount(0)
+            logger.info(f"Очищены данные о {count} транзакциях")
 
-
-# Точка входа в приложение
-if __name__ == '__main__':
-    app = QtWidgets.QApplication(sys.argv)
-    app.setStyle('fusion')
-    
-    # Настройка тёмной темы
-    app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
-    
-    # Создание и отображение главного окна
-    window = MainWindow()
-    window.show()
-    
-    # Запуск приложения
-                 sys.exit(app.exec_())
+    # --- Вкладка «Награды» ---
+    def _tab_rewards(self):
+        """Создание вкладки для управления наградами"""
+        w = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(w)
+        
+        # Таблица наград
+        self.table_rewards = QtWidgets.QTableWidget(0, 3)
+        self.table_rewards.setHorizontalHeaderLabels(['Адрес', 'PLEX ONE', 'USDT'])
+        self.table_rewards.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.table_rewards.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
+        self.table_rewards.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table_rewards.customContextMenuRequested.connect(self._show_rewards_context_menu)
+        layout.addWidget(self.table_rewards)
+        
+        # Кнопки действий с наградами
+        buttons_layout = QtWidgets.QHBoxLayout()
+        
+        self.btn_add_row = QtWidgets.QPushButton('Добавить строку')
+        self.btn_add_row.clicked.connect(self._add_rewards_row)
+        buttons_layout.addWidget(self.btn_add_row)
+        
+        self.btn_remove_row = QtWidgets.QPushButton('Удалить выбранное')
+        self.btn_remove_row.clicked.connect(self._remove_rewards_row)
+        buttons_layout.addWidget(self.btn_remove_row)
+        
+        self.btn_clear = QtWidgets.QPushButton('Очистить всё')
+        self.btn_clear.clicked.connect(self._clear_rewards)
+        buttons_layout.addWidget(self.btn_clear)
+        
+        layout.addLayout(buttons_layout)
+        
+        # Группа для случайной генерации сумм с настраиваемыми диапазонами
+        random_group = QtWidgets.QGroupBox("Генерация случайных сумм")
+        random_layout = QtWidgets.QVBoxLayout(random_group)
+        
+        # Настройки для PLEX
+        plex_layout = QtWidgets.QHBoxLayout()
+        plex_layout.addWidget(QtWidgets.QLabel('PLEX ONE диапазон:'))
+        
+        self.plex_min = QtWidgets.QDoubleSpinBox()
+        self.plex_min.setRange(0, 10000)
         self.plex_min.setDecimals(2)
         self.plex_min.setValue(2.0)
         plex_layout.addWidget(self.plex_min)
@@ -3908,9 +2823,8 @@ if __name__ == '__main__':
             logger.info(f"Периодическая отправка #{self.direct_send_current_period}: "
                       f"{amount} {token_type.upper()} на адрес {to_addr}")
             
-            # Отправка PLEX или USDT в зависимости от типа токена через универсальный метод (адрес контракта)
-            token_addr = PLEX_CONTRACT if token_type.lower() == 'plex' else USDT_CONTRACT
-            self._send_token(to_addr, amount, token_addr)
+            # Отправка PLEX или USDT в зависимости от типа токена
+            self._send_token(to_addr, amount, token_type)
                 
             # Обновляем прогресс
             if self.direct_send_total_periods > 0:
@@ -3984,6 +2898,77 @@ if __name__ == '__main__':
             self.direct_send_stop_btn.setEnabled(False)
             self.direct_send_status.append("Отправка остановлена")
 
+    def _send_token(self, to_addr, amount, token_type):
+        """
+        Отправка токена (PLEX или USDT)
+        
+        Args:
+            to_addr (str): Адрес получателя
+            amount (float): Количество токенов
+            token_type (str): Тип токена ('plex' или 'usdt')
+        """
+        try:
+            if not blockchain_enabled:
+                logger.warning("Блокчейн отключен. Имитация отправки...")
+                time.sleep(1)
+                tx_hash = "0x" + ''.join(random.choices('0123456789abcdef', k=64))
+                add_history(token_type.upper(), to_addr, amount, tx_hash)
+                return tx_hash
+                
+            token_addr = PLEX_CONTRACT if token_type.lower() == 'plex' else USDT_CONTRACT
+            w3 = self.rpc.web3()  # Получаем экземпляр web3 с уже внедренным POA middleware
+            
+            # Преобразование адресов в формат checksummed
+            from_addr = w3.eth.account.from_key(self.pk).address
+            to_addr = w3.to_checksum_address(to_addr)
+            token_addr = w3.to_checksum_address(token_addr)
+            
+            # Получение контракта токена
+            token_contract = w3.eth.contract(address=token_addr, abi=ERC20_ABI)
+            
+            # Получение decimals токена
+            decimals = token_contract.functions.decimals().call()
+            
+            # Преобразование суммы в wei
+            amount_wei = int(amount * 10**decimals)
+            
+            # Установка цены газа
+            gas_price = w3.to_wei(self.cfg.get_gas_price(), 'gwei')
+            
+            # Создание транзакции
+            tx_params = {
+                'from': from_addr,
+                'nonce': w3.eth.get_transaction_count(from_addr),
+                'gasPrice': gas_price
+            }
+            
+            # Оценка газа для транзакции
+            gas_estimate = token_contract.functions.transfer(
+                to_addr, amount_wei
+            ).estimate_gas(tx_params)
+            
+            tx_params['gas'] = int(gas_estimate * 1.2)  # Добавляем 20% запаса для газа
+            
+            # Создание подписанной транзакции
+            tx = token_contract.functions.transfer(
+                to_addr, amount_wei
+            ).build_transaction(tx_params)
+            
+            signed_tx = w3.eth.account.sign_transaction(tx, self.pk)
+            
+            # Отправка транзакции
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            tx_hash_hex = tx_hash.hex()
+            
+            # Добавление в историю
+            add_history(token_type.upper(), to_addr, amount, tx_hash_hex)
+            
+            logger.info(f"Токен {token_type.upper()} отправлен: {amount} на {to_addr}, TX: {tx_hash_hex}")
+            return tx_hash_hex
+                
+        except Exception as e:
+            logger.error(f"Ошибка при отправке {token_type.upper()}: {e}")
+            return None
     def _collect_tasks(self):
         """Сбор задач для отправки из таблицы"""
         tasks = []
@@ -4066,7 +3051,7 @@ if __name__ == '__main__':
             
             # Подготавливаем и отображаем очередь
             queue_items = []
-            for _, (addr, plex, usdt) in enumerate(tasks):
+            for i, (addr, plex, usdt) in enumerate(tasks):
                 if hasattr(addr, 'text'):
                     to_addr = addr.text()
                     tx_hash = addr.data(QtCore.Qt.UserRole)
@@ -4350,49 +3335,6 @@ if __name__ == '__main__':
         self.track_tx_checkbox.setChecked(True)
         form.addRow("", self.track_tx_checkbox)
         
-        # Группа фильтрации по датам
-        date_filter_group = QtWidgets.QGroupBox("Фильтрация по датам")
-        date_filter_layout = QtWidgets.QVBoxLayout(date_filter_group)
-        
-        # Переключатель режима фильтрации по датам
-        date_radio_layout = QtWidgets.QHBoxLayout()
-        self.date_filter_group = QtWidgets.QButtonGroup(w)
-        self.date_all_time_radio = QtWidgets.QRadioButton('За все время')
-        self.date_range_radio = QtWidgets.QRadioButton('Диапазон дат')
-        self.date_all_time_radio.setChecked(True)
-        self.date_filter_group.addButton(self.date_all_time_radio)
-        self.date_filter_group.addButton(self.date_range_radio)
-        date_radio_layout.addWidget(self.date_all_time_radio)
-        date_radio_layout.addWidget(self.date_range_radio)
-        date_filter_layout.addLayout(date_radio_layout)
-        
-        # Выбор диапазона дат
-        date_range_layout = QtWidgets.QHBoxLayout()
-        date_range_layout.addWidget(QtWidgets.QLabel('От:'))
-        self.date_from = QtWidgets.QDateEdit()
-        self.date_from.setDate(QtCore.QDate.currentDate())
-        self.date_from.setEnabled(False)
-        date_range_layout.addWidget(self.date_from)
-        
-        date_range_layout.addWidget(QtWidgets.QLabel('До:'))
-        self.date_to = QtWidgets.QDateEdit()
-        self.date_to.setDate(QtCore.QDate.currentDate())
-        self.date_to.setEnabled(False)
-        date_range_layout.addWidget(self.date_to)
-        
-        # Кнопка "Сегодня"
-        self.today_btn = QtWidgets.QPushButton('Сегодня')
-        self.today_btn.clicked.connect(self._set_date_to_today)
-        self.today_btn.setEnabled(False)
-        date_range_layout.addWidget(self.today_btn)
-        
-        date_filter_layout.addLayout(date_range_layout)
-        
-        # Подключаем переключение режима фильтрации по датам
-        self.date_all_time_radio.toggled.connect(self._toggle_date_filter_mode)
-        self.date_range_radio.toggled.connect(self._toggle_date_filter_mode)
-        
-        layout.addWidget(date_filter_group)
         layout.addLayout(form)
         
         # Кнопки действий
@@ -4416,9 +3358,7 @@ if __name__ == '__main__':
         # Таблица результатов
         self.search_results_table = QtWidgets.QTableWidget(0, 3)
         self.search_results_table.setHorizontalHeaderLabels(['Отправитель', 'Количество TX', 'Последняя TX'])
-        header = self.search_results_table.horizontalHeader()
-        if header:
-            header.setSectionResizeMode(STRETCH_MODE)
+        self.search_results_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.search_results_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
         self.search_results_table.setSelectionMode(QtWidgets.QTableView.ExtendedSelection)
         self.search_results_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -4451,16 +3391,6 @@ if __name__ == '__main__':
         self.search_range_radio.toggled.connect(self._toggle_search_mode_paginated)
         
         return w
-
-    def _tab_history(self):
-        """Простая заглушка вкладки История, чтобы не падало приложение (можно расширить позже)."""
-        w = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(w)
-        lbl = QtWidgets.QLabel("История пока недоступна. Функционал в разработке.")
-        lbl.setWordWrap(True)
-        layout.addWidget(lbl)
-        layout.addStretch()
-        return w
         
     def _toggle_search_mode_paginated(self):
         """Переключение режима поиска в разделе постраничного поиска"""
@@ -4471,23 +3401,6 @@ if __name__ == '__main__':
         self.max_amount.setEnabled(not is_exact)
         
         logger.debug(f"Режим поиска переключен на: {'точная сумма' if is_exact else 'диапазон'}")
-    
-    def _toggle_date_filter_mode(self):
-        """Переключает режим фильтрации по датам"""
-        is_range_mode = self.date_range_radio.isChecked()
-        
-        # Включить/выключить поля для диапазона дат
-        self.date_from.setEnabled(is_range_mode)
-        self.date_to.setEnabled(is_range_mode)
-        self.today_btn.setEnabled(is_range_mode)
-        
-        logger.debug(f"Режим фильтрации по датам переключен на: {'диапазон дат' if is_range_mode else 'за все время'}")
-    
-    def _set_date_to_today(self):
-        """Устанавливает дату 'До' на сегодняшний день"""
-        today = QtCore.QDate.currentDate()
-        self.date_to.setDate(today)
-        logger.debug(f"Дата 'До' установлена на сегодня: {today.toString('yyyy-MM-dd')}")
         
     def _start_paginated_search(self):
         """Запуск процесса постраничного поиска транзакций"""
@@ -4522,29 +3435,12 @@ if __name__ == '__main__':
             if max_amount <= min_amount:
                 return logger.error("Максимальная сумма должна быть больше минимальной")
         
-        # Дополнительная проверка: убеждаемся, что указаны параметры поиска
-        if exact_amount is None and (min_amount is None or max_amount is None):
-            return logger.error("Необходимо указать либо точную сумму, либо диапазон сумм для поиска")
-        
         # Получаем настройки пагинации
         page_size = self.page_size.value()
         max_pages = self.max_pages.value()
         delay_seconds = self.api_delay.value()
         min_tx_count = self.min_tx_count.value()
         track_individual_tx = self.track_tx_checkbox.isChecked()
-        
-        # Получаем параметры фильтрации по датам
-        date_from = None
-        date_to = None
-        if self.date_range_radio.isChecked():
-            date_from = self.date_from.date().toPyDate()
-            date_to = self.date_to.date().toPyDate()
-            
-            # Проверяем корректность диапазона дат
-            if date_from > date_to:
-                return logger.error("Дата 'От' должна быть раньше или равна дате 'До'")
-            
-            logger.info(f"Фильтрация по датам: с {date_from} по {date_to}")
         
         # Запускаем поиск в отдельном потоке
         self.is_searching = True
@@ -4558,15 +3454,13 @@ if __name__ == '__main__':
         self.search_thread = threading.Thread(
             target=self._paginated_search_thread, 
             args=(wallet_address, token_address, exact_amount, min_amount, max_amount, 
-                  page_size, max_pages, delay_seconds, min_tx_count, track_individual_tx,
-                  date_from, date_to),
+                  page_size, max_pages, delay_seconds, min_tx_count, track_individual_tx),
             daemon=True
         )
         self.search_thread.start()
         
     def _paginated_search_thread(self, wallet_address, token_address, exact_amount, min_amount, max_amount, 
-                               page_size, max_pages, delay_seconds, min_tx_count, track_individual_tx,
-                               date_from=None, date_to=None):
+                               page_size, max_pages, delay_seconds, min_tx_count, track_individual_tx):
         """Поток для выполнения постраничного поиска транзакций"""
         try:
             logger.info(f"Начинаем поиск транзакций для адреса {wallet_address}")
@@ -4579,8 +3473,6 @@ if __name__ == '__main__':
                 'min_amount': min_amount,
                 'max_amount': max_amount,
                 'min_tx_count': min_tx_count,
-                'date_from': date_from.isoformat() if date_from else None,
-                'date_to': date_to.isoformat() if date_to else None,
                 'search_time': datetime.now().isoformat()
             }
             
@@ -4598,69 +3490,24 @@ if __name__ == '__main__':
                 track_individual_tx=track_individual_tx
             )
             
-            # Фильтруем транзакции по датам, если указан диапазон
-            filtered_txs = matching_txs
-            if date_from or date_to:
-                filtered_txs = []
-                for tx in matching_txs:
-                    try:
-                        tx_time = datetime.fromtimestamp(int(tx.get('timeStamp', 0)))
-                        tx_date = tx_time.date()
-                        
-                        # Проверяем фильтр по датам
-                        if date_from and tx_date < date_from:
-                            continue
-                        if date_to and tx_date > date_to:
-                            continue
-                        
-                        filtered_txs.append(tx)
-                    except Exception as e:
-                        logger.error(f"Ошибка фильтрации транзакции по дате: {e}")
-                
-                logger.info(f"Фильтрация по датам: {len(matching_txs)} -> {len(filtered_txs)} транзакций")
-            
-            # Сохраняем найденные транзакции в базу данных (только отфильтрованные)
-            for tx in filtered_txs:
+            # Сохраняем найденные транзакции в базу данных
+            for tx in matching_txs:
                 add_found_transaction(tx, search_params)
             
-            # Если нужно учитывать отдельные транзакции, сохраняем их в базу (только отфильтрованные)
+            # Если нужно учитывать отдельные транзакции, сохраняем их в базу
             search_time = datetime.now().isoformat()
             if track_individual_tx and sender_transactions:
                 for sender, tx_list in sender_transactions.items():
-                    # Фильтруем транзакции отправителя по датам
-                    filtered_tx_list = []
                     for tx_info in tx_list:
-                        try:
-                            tx_time = datetime.fromtimestamp(int(tx_info.get('timestamp', 0)))
-                            tx_date = tx_time.date()
-                            
-                            # Проверяем фильтр по датам
-                            if date_from and tx_date < date_from:
-                                continue
-                            if date_to and tx_date > date_to:
-                                continue
-                            
-                            filtered_tx_list.append(tx_info)
-                        except Exception as e:
-                            logger.error(f"Ошибка фильтрации транзакции отправителя по дате: {e}")
-                    
-                    # Сохраняем только отфильтрованные транзакции
-                    for tx_info in filtered_tx_list:
                         add_sender_transaction(sender, tx_info, search_time)
             
-            # Пересчитываем счетчики отправителей после фильтрации по датам
-            sender_counter_filtered = {}
-            for tx in filtered_txs:
-                sender = tx.get('from', '').lower()
-                sender_counter_filtered[sender] = sender_counter_filtered.get(sender, 0) + 1
-            
             # Фильтруем отправителей по минимальному количеству транзакций
-            filtered_senders = {addr: count for addr, count in sender_counter_filtered.items() 
+            filtered_senders = {addr: count for addr, count in sender_counter.items() 
                               if count >= min_tx_count}
             
-            # Формируем информацию о последних транзакциях
+               # Формируем информацию о последних транзакциях
             sender_last_tx = {}
-            for tx in filtered_txs:
+            for tx in matching_txs:
                 try:
                     sender = tx.get('from', '').lower()
                     if sender in filtered_senders:
@@ -4676,43 +3523,9 @@ if __name__ == '__main__':
                 last_tx_info = sender_last_tx.get(sender, (datetime.now(), ''))
                 results.append((sender, count, last_tx_info[0].strftime('%Y-%m-%d %H:%M:%S'), last_tx_info[1]))
             
-            # Создаем отфильтрованный словарь транзакций отправителей
-            filtered_sender_transactions = {}
-            if track_individual_tx and sender_transactions:
-                for sender, tx_list in sender_transactions.items():
-                    if sender in filtered_senders:  # Только для отфильтрованных отправителей
-                        filtered_tx_list = []
-                        for tx_info in tx_list:
-                            try:
-                                tx_time = datetime.fromtimestamp(int(tx_info.get('timestamp', 0)))
-                                tx_date = tx_time.date()
-                                
-                                # Проверяем фильтр по датам
-                                if date_from and tx_date < date_from:
-                                    continue
-                                if date_to and tx_date > date_to:
-                                    continue
-                                
-                                filtered_tx_list.append(tx_info)
-                            except Exception as e:
-                                logger.error(f"Ошибка фильтрации транзакции отправителя по дате: {e}")
-                        
-                        if filtered_tx_list:  # Добавляем только если есть отфильтрованные транзакции
-                            filtered_sender_transactions[sender] = filtered_tx_list
-            
             # Отправляем результаты в основной поток для обновления UI
-            self.update_table_signal.emit(results, filtered_senders, filtered_sender_transactions)
-            
-            # Формируем сообщение о завершении поиска
-            completion_message = f"Поиск завершен. Найдено {len(filtered_senders)} отправителей с {min_tx_count}+ транзакциями"
-            if date_from or date_to:
-                date_range = f"с {date_from} по {date_to}" if date_from and date_to else f"с {date_from}" if date_from else f"по {date_to}"
-                completion_message += f" (фильтр по датам: {date_range})"
-            
-            logger.info(completion_message)
-            
-            # Отправляем сигнал для обновления таблицы найденных транзакций
-            self.found_tx_added_signal.emit()
+            self.update_table_signal.emit(results, filtered_senders, sender_transactions or {})
+            logger.info(f"Поиск завершен. Найдено {len(filtered_senders)} отправителей с {min_tx_count}+ транзакциями")
             
         except Exception as e:
             logger.error(f"Ошибка при выполнении поиска: {e}")
@@ -4778,9 +3591,6 @@ if __name__ == '__main__':
         if reply == QtWidgets.QMessageBox.Yes:
             self.search_results_table.setRowCount(0)
             count = clear_found_transactions()
-            # Также очищаем таблицу найденных транзакций
-            if hasattr(self, 'found_tx_table'):
-                self.found_tx_table.setRowCount(0)
             logger.info(f"Очищено {count} записей из истории поиска")
     
     def _show_search_context_menu(self, position):
@@ -5067,9 +3877,7 @@ if __name__ == '__main__':
         # Таблица токенов
         self.tokens_table = QtWidgets.QTableWidget(0, 4)
         self.tokens_table.setHorizontalHeaderLabels(["Токен","Контракт","Баланс","Decimals"])
-        header = self.tokens_table.horizontalHeader()
-        if header is not None:
-            header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.tokens_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.tokens_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
         self.tokens_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.tokens_table.customContextMenuRequested.connect(self._tokens_context_menu)
@@ -5078,9 +3886,7 @@ if __name__ == '__main__':
         # Таблица результатов
         self.table_res = QtWidgets.QTableWidget(0, 2)  # Увеличиваем до 2 столбцов (адрес и количество)
         self.table_res.setHorizontalHeaderLabels(['Отправитель', 'Кол-во TX'])
-        result_header = self.table_res.horizontalHeader()
-        if result_header is not None:
-            result_header.setStretchLastSection(True)
+        self.table_res.horizontalHeader().setStretchLastSection(True)
         self.table_res.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.table_res.customContextMenuRequested.connect(self._analysis_context_menu)
         l.addWidget(self.table_res)
@@ -5211,15 +4017,6 @@ if __name__ == '__main__':
 
         if blockchain_enabled:
             try:
-                # Включаем небезопасные HD фичи web3 (требует подтверждения пользователя)
-                from eth_account import Account as _AccountModule
-                try:
-                    # Включаем один раз (idempotent)
-                    if hasattr(_AccountModule, 'enable_unaudited_hdwallet_features'):
-                        _AccountModule.enable_unaudited_hdwallet_features()
-                except Exception as ee:
-                    logger.warning(f"Не удалось включить HD wallet фичи: {ee}")
-
                 acct = Account.from_mnemonic(clean, account_path="m/44'/60'/0'/0/0")
             except ValidationError as e:
                 logger.error(f"Неверная seed-фраза: {e}")
@@ -5229,12 +4026,9 @@ if __name__ == '__main__':
                 return
 
             # если всё OK - сохраняем PK и выводим адрес
-            pk_hex = acct.key.hex()
-            self.cfg.set_key(pk_hex)
-            self.pk = pk_hex
-            # Маскируем часть адреса в логах
-            short_addr = f"{acct.address[:6]}...{acct.address[-4:]}"
-            logger.info(f"Seed сохранён, адрес: {short_addr}")
+            self.cfg.set_key(acct.key.hex())
+            self.pk = acct.key.hex()
+            logger.info(f"Seed сохранён, адрес: {acct.address}")
         else:
             logger.info("Seed сохранён (blockchain отключён)")
 
@@ -5457,9 +4251,6 @@ if __name__ == '__main__':
                 for sender, tx_list in sender_transactions.items():
                     for tx_info in tx_list:
                         add_sender_transaction(sender, tx_info, search_time)
-            
-            # Отправляем сигнал для обновления таблицы найденных транзакций
-            self.found_tx_added_signal.emit()
                 
         except Exception as e:
             logger.error(f"Ошибка при поиске транзакций: {e}")
@@ -5526,9 +4317,6 @@ if __name__ == '__main__':
                 for sender, tx_list in sender_transactions.items():
                     for tx_info in tx_list:
                         add_sender_transaction(sender, tx_info, search_time)
-            
-            # Отправляем сигнал для обновления таблицы найденных транзакций
-            self.found_tx_added_signal.emit()
                 
         except Exception as e:
             logger.error(f"Ошибка при поиске транзакций по диапазону: {e}")
@@ -5649,28 +4437,77 @@ if __name__ == '__main__':
         if reply == QtWidgets.QMessageBox.Yes:
             self._randomize_plex()
             self._randomize_usdt()
-
-    def _load_history(self):
-        """Загрузка истории отправок из БД"""
+    # --- Таб «История» ---
+    def _tab_history(self):
+        """Создание вкладки для отображения истории транзакций"""
+        w = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(w)
+        
+        # Таблица истории транзакций
+        self.history_table = QtWidgets.QTableWidget(0, 6)
+        self.history_table.setHorizontalHeaderLabels(['Время', 'Токен', 'Получатель', 'Сумма', 'TX Hash', 'Статус'])
+        self.history_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.history_table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Interactive)
+        self.history_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
+        self.history_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.history_table.customContextMenuRequested.connect(self._history_context_menu)
+        layout.addWidget(self.history_table)
+        
+        # Кнопки действий
+        buttons_layout = QtWidgets.QHBoxLayout()
+        
+        btn_refresh = QtWidgets.QPushButton('Обновить')
+        btn_refresh.clicked.connect(self._refresh_history)
+        buttons_layout.addWidget(btn_refresh)
+        
+        btn_track = QtWidgets.QPushButton('Отслеживать TX')
+        btn_track.clicked.connect(self._track_tx_statuses)
+        buttons_layout.addWidget(btn_track)
+        
+        btn_copy_all = QtWidgets.QPushButton('Копировать все хэши')
+        btn_copy_all.clicked.connect(self._copy_all_tx_hashes)
+        buttons_layout.addWidget(btn_copy_all)
+        
+        layout.addLayout(buttons_layout)
+        
+        # Загружаем историю при открытии вкладки
+        QtCore.QTimer.singleShot(100, self._refresh_history)
+        
+        return w
+    
+    def _refresh_history(self):
+        """Обновление истории транзакций из базы данных"""
         try:
+            # Получаем данные из БД
+            history = fetch_history()
+            
+            # Очищаем таблицу
             self.history_table.setRowCount(0)
-            rows = fetch_history(limit=500)
-            for row_data in rows:
+            
+            # Заполняем таблицу
+            for row_data in history:
                 row = self.history_table.rowCount()
                 self.history_table.insertRow(row)
+                
                 # Время
-                self.history_table.setItem(row, 0, QtWidgets.QTableWidgetItem(row_data['time']))
+                ts = datetime.fromisoformat(row_data['ts'])
+                self.history_table.setItem(row, 0, QtWidgets.QTableWidgetItem(ts.strftime('%Y-%m-%d %H:%M:%S')))
+                
                 # Токен
                 self.history_table.setItem(row, 1, QtWidgets.QTableWidgetItem(row_data['token']))
+                
                 # Получатель
                 self.history_table.setItem(row, 2, QtWidgets.QTableWidgetItem(row_data['to_addr']))
+                
                 # Сумма
                 self.history_table.setItem(row, 3, QtWidgets.QTableWidgetItem(str(row_data['amount'])))
+                
                 # TX Hash
                 tx_item = QtWidgets.QTableWidgetItem(row_data['tx'][:10] + "..." + row_data['tx'][-6:])
                 tx_item.setToolTip(row_data['tx'])
                 tx_item.setData(QtCore.Qt.UserRole, row_data['tx'])
                 self.history_table.setItem(row, 4, tx_item)
+                
                 # Статус
                 status_item = QtWidgets.QTableWidgetItem(row_data['status'])
                 if row_data['status'] == 'success':
@@ -5678,9 +4515,11 @@ if __name__ == '__main__':
                 elif row_data['status'] == 'failed':
                     status_item.setBackground(QtGui.QColor('#440000'))
                 self.history_table.setItem(row, 5, status_item)
+            
             logger.info(f"Загружено {self.history_table.rowCount()} записей истории")
+            
         except Exception as e:
-            logger.error(f"Ошибка при загрузке истории: {e}")
+            logger.error(f"Ошибка при обновлении истории: {e}")
     
     def _history_context_menu(self, position):
         """Отображение контекстного меню для таблицы истории"""
@@ -5832,33 +4671,13 @@ if __name__ == '__main__':
         w = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(w)
         
-        # Группа фильтрации
-        filter_group = QtWidgets.QGroupBox("Фильтрация")
-        filter_layout = QtWidgets.QHBoxLayout(filter_group)
-        
-        # Поле для фильтрации по адресу кошелька
-        filter_layout.addWidget(QtWidgets.QLabel("Адрес кошелька:"))
-        self.found_tx_wallet_filter = QtWidgets.QLineEdit()
-        self.found_tx_wallet_filter.setPlaceholderText("Введите адрес кошелька для фильтрации")
-        self.found_tx_wallet_filter.textChanged.connect(self._refresh_found_tx)
-        filter_layout.addWidget(self.found_tx_wallet_filter)
-        
-        # Кнопка очистки фильтра
-        btn_clear_filter = QtWidgets.QPushButton("Очистить фильтр")
-        btn_clear_filter.clicked.connect(self._clear_found_tx_filter)
-        filter_layout.addWidget(btn_clear_filter)
-        
-        layout.addWidget(filter_group)
-        
         # Таблица найденных транзакций
-        self.found_tx_table = QtWidgets.QTableWidget(0, 8)
+        self.found_tx_table = QtWidgets.QTableWidget(0, 7)
         self.found_tx_table.setHorizontalHeaderLabels([
-            'Время поиска', 'Адрес кошелька', 'От кого', 'Кому', 'Токен', 'Сумма', 'Хэш Tx', 'Время Tx'
+            'Время поиска', 'От кого', 'Кому', 'Токен', 'Сумма', 'Хэш Tx', 'Время Tx'
         ])
-        header = self.found_tx_table.horizontalHeader()
-        if header:
-            header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-            header.setSectionResizeMode(6, QtWidgets.QHeaderView.Interactive)
+        self.found_tx_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.found_tx_table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Interactive)
         self.found_tx_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
         self.found_tx_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.found_tx_table.customContextMenuRequested.connect(self._found_tx_context_menu)
@@ -5881,32 +4700,8 @@ if __name__ == '__main__':
         
         layout.addLayout(buttons_layout)
         
-        # Кнопки копирования данных
-        copy_buttons_layout = QtWidgets.QHBoxLayout()
-        
-        btn_copy_all_addresses = QtWidgets.QPushButton('Копировать все адреса')
-        btn_copy_all_addresses.clicked.connect(self._copy_all_found_addresses)
-        copy_buttons_layout.addWidget(btn_copy_all_addresses)
-        
-        btn_copy_senders = QtWidgets.QPushButton('Копировать отправителей')
-        btn_copy_senders.clicked.connect(self._copy_found_senders)
-        copy_buttons_layout.addWidget(btn_copy_senders)
-        
-        btn_copy_receivers = QtWidgets.QPushButton('Копировать получателей')
-        btn_copy_receivers.clicked.connect(self._copy_found_receivers)
-        copy_buttons_layout.addWidget(btn_copy_receivers)
-        
-        btn_copy_tx_hashes = QtWidgets.QPushButton('Копировать хэши транзакций')
-        btn_copy_tx_hashes.clicked.connect(self._copy_found_tx_hashes)
-        copy_buttons_layout.addWidget(btn_copy_tx_hashes)
-        
-        layout.addLayout(copy_buttons_layout)
-        
-        # Не загружаем данные автоматически - только при явной команде обновления
-        # QtCore.QTimer.singleShot(100, self._refresh_found_tx)
-        
-        # Подключаем сигнал для автоматического обновления при добавлении новых транзакций
-        self.found_tx_added_signal.connect(self._refresh_found_tx)
+        # Загружаем данные при открытии вкладки
+        QtCore.QTimer.singleShot(100, self._refresh_found_tx)
         
         return w
     
@@ -5915,24 +4710,6 @@ if __name__ == '__main__':
         try:
             # Получаем данные из БД
             found_txs = fetch_found_transactions()
-            
-            # Применяем фильтр по адресу кошелька (ищем в from_addr и to_addr)
-            wallet_filter = self.found_tx_wallet_filter.text().strip().lower()
-            if wallet_filter:
-                filtered_txs = []
-                for tx in found_txs:
-                    # Парсим search_data для получения wallet_address
-                    try:
-                        search_data = json.loads(tx['search_data']) if tx['search_data'] else {}
-                        wallet_address = search_data.get('wallet_address', '')
-                    except:
-                        wallet_address = ''
-                    
-                    if (wallet_filter in tx['from_addr'].lower() or 
-                        wallet_filter in tx['to_addr'].lower() or
-                        wallet_filter in wallet_address.lower()):
-                        filtered_txs.append(tx)
-                found_txs = filtered_txs
             
             # Очищаем таблицу
             self.found_tx_table.setRowCount(0)
@@ -5946,55 +4723,37 @@ if __name__ == '__main__':
                 ts = datetime.fromisoformat(tx['ts'])
                 self.found_tx_table.setItem(row, 0, QtWidgets.QTableWidgetItem(ts.strftime('%Y-%m-%d %H:%M:%S')))
                 
-                # Адрес кошелька (из search_data)
-                try:
-                    search_data = json.loads(tx['search_data']) if tx['search_data'] else {}
-                    wallet_address = search_data.get('wallet_address', tx['from_addr'])
-                except:
-                    wallet_address = tx['from_addr']
-                self.found_tx_table.setItem(row, 1, QtWidgets.QTableWidgetItem(wallet_address))
-                
                 # От кого
                 from_item = QtWidgets.QTableWidgetItem(tx['from_addr'])
-                self.found_tx_table.setItem(row, 2, from_item)
+                self.found_tx_table.setItem(row, 1, from_item)
                 
                 # Кому
                 to_item = QtWidgets.QTableWidgetItem(tx['to_addr'])
-                self.found_tx_table.setItem(row, 3, to_item)
+                self.found_tx_table.setItem(row, 2, to_item)
                 
                 # Токен
-                self.found_tx_table.setItem(row, 4, QtWidgets.QTableWidgetItem(tx['token_name'] or 'N/A'))
+                self.found_tx_table.setItem(row, 3, QtWidgets.QTableWidgetItem(tx['token_name']))
                 
                 # Сумма
-                self.found_tx_table.setItem(row, 5, QtWidgets.QTableWidgetItem(str(tx['amount'])))
+                self.found_tx_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(tx['amount'])))
                 
                 # Хэш Tx
-                tx_hash = tx['tx_hash']
-                if len(tx_hash) > 16:
-                    tx_display = tx_hash[:10] + "..." + tx_hash[-6:]
-                else:
-                    tx_display = tx_hash
-                tx_item = QtWidgets.QTableWidgetItem(tx_display)
-                tx_item.setToolTip(tx_hash)
-                tx_item.setData(QtCore.Qt.UserRole, tx_hash)
-                self.found_tx_table.setItem(row, 6, tx_item)
+                tx_item = QtWidgets.QTableWidgetItem(tx['tx_hash'][:10] + "..." + tx['tx_hash'][-6:])
+                tx_item.setToolTip(tx['tx_hash'])
+                tx_item.setData(QtCore.Qt.UserRole, tx['tx_hash'])
+                self.found_tx_table.setItem(row, 5, tx_item)
                 
                 # Время Tx
                 if tx['block_time']:
-                    try:
-                        block_time = datetime.fromisoformat(tx['block_time'])
-                        self.found_tx_table.setItem(row, 7, QtWidgets.QTableWidgetItem(block_time.strftime('%Y-%m-%d %H:%M:%S')))
-                    except:
-                        self.found_tx_table.setItem(row, 7, QtWidgets.QTableWidgetItem(str(tx['block_time'])))
+                    block_time = datetime.fromisoformat(tx['block_time'])
+                    self.found_tx_table.setItem(row, 6, QtWidgets.QTableWidgetItem(block_time.strftime('%Y-%m-%d %H:%M:%S')))
                 else:
-                    self.found_tx_table.setItem(row, 7, QtWidgets.QTableWidgetItem("-"))
+                    self.found_tx_table.setItem(row, 6, QtWidgets.QTableWidgetItem("-"))
             
             logger.info(f"Загружено {self.found_tx_table.rowCount()} найденных транзакций")
             
         except Exception as e:
             logger.error(f"Ошибка при обновлении найденных транзакций: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
     
     def _found_tx_context_menu(self, position):
         """Отображение контекстного меню для таблицы найденных транзакций"""
@@ -6003,7 +4762,6 @@ if __name__ == '__main__':
         copy_tx = menu.addAction("Копировать хэш транзакции")
         copy_from = menu.addAction("Копировать адрес отправителя")
         copy_to = menu.addAction("Копировать адрес получателя")
-        copy_wallet = menu.addAction("Копировать адрес кошелька")
         open_tx = menu.addAction("Открыть транзакцию в BscScan")
         add_from_to_rewards = menu.addAction("Добавить отправителя в награды")
         
@@ -6017,10 +4775,9 @@ if __name__ == '__main__':
             return
             
         row = selected[0].row()
-        tx_hash = self.found_tx_table.item(row, 6).data(QtCore.Qt.UserRole)
-        wallet_addr = self.found_tx_table.item(row, 1).text()
-        from_addr = self.found_tx_table.item(row, 2).text()
-        to_addr = self.found_tx_table.item(row, 3).text()
+        tx_hash = self.found_tx_table.item(row, 5).data(QtCore.Qt.UserRole)
+        from_addr = self.found_tx_table.item(row, 1).text()
+        to_addr = self.found_tx_table.item(row, 2).text()
         
         if action == copy_tx:
             QtWidgets.QApplication.clipboard().setText(tx_hash)
@@ -6033,10 +4790,6 @@ if __name__ == '__main__':
         elif action == copy_to:
             QtWidgets.QApplication.clipboard().setText(to_addr)
             logger.info(f"Адрес получателя скопирован: {to_addr}")
-            
-        elif action == copy_wallet:
-            QtWidgets.QApplication.clipboard().setText(wallet_addr)
-            logger.info(f"Адрес кошелька скопирован: {wallet_addr}")
             
         elif action == open_tx:
             url = f"https://bscscan.com/tx/{tx_hash}"
@@ -6053,104 +4806,21 @@ if __name__ == '__main__':
         
         try:
             with open(path, 'w', encoding='utf-8') as f:
-                f.write('timestamp,wallet_address,from_addr,to_addr,token,amount,tx_hash,block_time\n')
+                f.write('timestamp,from_addr,to_addr,token,amount,tx_hash,block_time\n')
                 for row in range(self.found_tx_table.rowCount()):
                     timestamp = self.found_tx_table.item(row, 0).text()
-                    wallet_addr = self.found_tx_table.item(row, 1).text()
-                    from_addr = self.found_tx_table.item(row, 2).text()
-                    to_addr = self.found_tx_table.item(row, 3).text()
-                    token = self.found_tx_table.item(row, 4).text()
-                    amount = self.found_tx_table.item(row, 5).text()
-                    tx_hash = self.found_tx_table.item(row, 6).data(QtCore.Qt.UserRole)
-                    block_time = self.found_tx_table.item(row, 7).text()
+                    from_addr = self.found_tx_table.item(row, 1).text()
+                    to_addr = self.found_tx_table.item(row, 2).text()
+                    token = self.found_tx_table.item(row, 3).text()
+                    amount = self.found_tx_table.item(row, 4).text()
+                    tx_hash = self.found_tx_table.item(row, 5).data(QtCore.Qt.UserRole)
+                    block_time = self.found_tx_table.item(row, 6).text()
                     
-                    f.write(f'"{timestamp}","{wallet_addr}","{from_addr}","{to_addr}","{token}",{amount},"{tx_hash}","{block_time}"\n')
+                    f.write(f'"{timestamp}","{from_addr}","{to_addr}","{token}",{amount},"{tx_hash}","{block_time}"\n')
             
             logger.info(f"Найденные транзакции экспортированы в {path}")
         except Exception as e:
             logger.error(f"Ошибка при экспорте найденных транзакций: {e}")
-    
-    def _clear_found_tx_filter(self):
-        """Очистка фильтра найденных транзакций"""
-        self.found_tx_wallet_filter.clear()
-        self._refresh_found_tx()
-        logger.info("Фильтр найденных транзакций очищен")
-    
-    def _copy_all_found_addresses(self):
-        """Копирование всех адресов из найденных транзакций"""
-        try:
-            addresses = set()
-            for row in range(self.found_tx_table.rowCount()):
-                # Добавляем адрес кошелька
-                wallet_addr = self.found_tx_table.item(row, 1).text()
-                addresses.add(wallet_addr)
-                # Добавляем адрес отправителя
-                from_addr = self.found_tx_table.item(row, 2).text()
-                addresses.add(from_addr)
-                # Добавляем адрес получателя
-                to_addr = self.found_tx_table.item(row, 3).text()
-                addresses.add(to_addr)
-            
-            if addresses:
-                addresses_text = '\n'.join(sorted(addresses))
-                QtWidgets.QApplication.clipboard().setText(addresses_text)
-                logger.info(f"Скопировано {len(addresses)} уникальных адресов")
-            else:
-                logger.warning("Нет адресов для копирования")
-        except Exception as e:
-            logger.error(f"Ошибка при копировании адресов: {e}")
-    
-    def _copy_found_senders(self):
-        """Копирование адресов отправителей из найденных транзакций"""
-        try:
-            senders = set()
-            for row in range(self.found_tx_table.rowCount()):
-                from_addr = self.found_tx_table.item(row, 2).text()
-                senders.add(from_addr)
-            
-            if senders:
-                senders_text = '\n'.join(sorted(senders))
-                QtWidgets.QApplication.clipboard().setText(senders_text)
-                logger.info(f"Скопировано {len(senders)} адресов отправителей")
-            else:
-                logger.warning("Нет отправителей для копирования")
-        except Exception as e:
-            logger.error(f"Ошибка при копировании отправителей: {e}")
-    
-    def _copy_found_receivers(self):
-        """Копирование адресов получателей из найденных транзакций"""
-        try:
-            receivers = set()
-            for row in range(self.found_tx_table.rowCount()):
-                to_addr = self.found_tx_table.item(row, 3).text()
-                receivers.add(to_addr)
-            
-            if receivers:
-                receivers_text = '\n'.join(sorted(receivers))
-                QtWidgets.QApplication.clipboard().setText(receivers_text)
-                logger.info(f"Скопировано {len(receivers)} адресов получателей")
-            else:
-                logger.warning("Нет получателей для копирования")
-        except Exception as e:
-            logger.error(f"Ошибка при копировании получателей: {e}")
-    
-    def _copy_found_tx_hashes(self):
-        """Копирование хэшей транзакций из найденных транзакций"""
-        try:
-            tx_hashes = []
-            for row in range(self.found_tx_table.rowCount()):
-                tx_hash = self.found_tx_table.item(row, 6).data(QtCore.Qt.UserRole)
-                if tx_hash:
-                    tx_hashes.append(tx_hash)
-            
-            if tx_hashes:
-                tx_hashes_text = '\n'.join(tx_hashes)
-                QtWidgets.QApplication.clipboard().setText(tx_hashes_text)
-                logger.info(f"Скопировано {len(tx_hashes)} хэшей транзакций")
-            else:
-                logger.warning("Нет хэшей транзакций для копирования")
-        except Exception as e:
-            logger.error(f"Ошибка при копировании хэшей транзакций: {e}")
     
     def _clear_found_tx(self):
         """Очистка таблицы найденных транзакций"""
@@ -6166,56 +4836,197 @@ if __name__ == '__main__':
             self.found_tx_table.setRowCount(0)
             logger.info(f"Очищено {count} найденных транзакций")
 
-    # (Удалено: устаревший монолитный UI и логика старой массовой рассылки)
-
-    def _mass_update_wallet_info(self):
-        """Обновление информации о кошельке и балансах для массовой рассылки"""
-        try:
-            if not self.pk:
-                self.mass_sender_address_label.setText("Адрес: (ключ не задан)")
-                self.mass_balance_plex_label.setText("PLEX: -")
-                self.mass_balance_bnb_label.setText("BNB: -")
-                self.mass_balance_usdt_label.setText("USDT: -")
-                return
-
-            w3 = self.rpc.web3()
-            account = Account.from_key(self.pk)
-            addr = w3.to_checksum_address(account.address)
-            self.mass_sender_address_label.setText(f"Адрес: {addr[:10]}...{addr[-6:]}")
-            self.mass_sender_address_label.setToolTip(addr)
-
-            # BNB баланс
-            try:
-                balance_bnb = w3.from_wei(w3.eth.get_balance(addr), 'ether')
-                self.mass_balance_bnb_label.setText(f"BNB: {float(balance_bnb):.5f}")
-            except Exception as e_bnb:
-                self.mass_balance_bnb_label.setText("BNB: ошибка")
-                logger.warning(f"Не удалось получить баланс BNB: {e_bnb}")
-
-            # PLEX баланс
-            try:
-                plex_contract = w3.eth.contract(address=w3.to_checksum_address(PLEX_CONTRACT), abi=ERC20_ABI)
-                plex_dec = plex_contract.functions.decimals().call()
-                plex_raw = plex_contract.functions.balanceOf(addr).call()
-                plex_val = plex_raw / (10 ** plex_dec)
-                self.mass_balance_plex_label.setText(f"PLEX: {plex_val:.4f}")
-            except Exception as e_plex:
-                self.mass_balance_plex_label.setText("PLEX: ошибка")
-                logger.warning(f"Не удалось получить баланс PLEX: {e_plex}")
-
-            # USDT баланс
-            try:
-                usdt_contract = w3.eth.contract(address=w3.to_checksum_address(USDT_CONTRACT), abi=ERC20_ABI)
-                usdt_dec = usdt_contract.functions.decimals().call()
-                usdt_raw = usdt_contract.functions.balanceOf(addr).call()
-                usdt_val = usdt_raw / (10 ** usdt_dec)
-                self.mass_balance_usdt_label.setText(f"USDT: {usdt_val:.4f}")
-            except Exception as e_usdt:
-                self.mass_balance_usdt_label.setText("USDT: ошибка")
-                logger.warning(f"Не удалось получить баланс USDT: {e_usdt}")
-
-        except Exception as e:
-            logger.error(f"Ошибка обновления информации о кошельке массовой рассылки: {e}")
+    # --- Вкладка «Массовая рассылка» ---
+    def _tab_mass_distribution(self):
+        """Создание вкладки для массовой рассылки токенов
+        
+        #MCP:MASS_DIST - Вкладка массовой рассылки
+        TODO:MCP - Добавить поддержку параллельной отправки
+        """
+        w = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(w)
+        
+        # Группа импорта адресов
+        import_group = QtWidgets.QGroupBox("Импорт адресов получателей")
+        import_layout = QtWidgets.QVBoxLayout(import_group)
+        
+        # Текстовое поле для вставки адресов
+        self.mass_addresses_text = QtWidgets.QTextEdit()
+        self.mass_addresses_text.setMaximumHeight(100)
+        self.mass_addresses_text.setPlaceholderText(
+            "Вставьте адреса сюда (разделенные пробелом, запятой, точкой с запятой или новой строкой)"
+        )
+        import_layout.addWidget(self.mass_addresses_text)
+        
+        # Кнопки импорта
+        import_buttons = QtWidgets.QHBoxLayout()
+        
+        self.mass_paste_btn = QtWidgets.QPushButton("Вставить из буфера")
+        self.mass_paste_btn.clicked.connect(self._mass_paste_addresses)
+        import_buttons.addWidget(self.mass_paste_btn)
+        
+        self.mass_import_excel_btn = QtWidgets.QPushButton("Импорт из Excel")
+        self.mass_import_excel_btn.clicked.connect(self._mass_import_excel)
+        import_buttons.addWidget(self.mass_import_excel_btn)
+        
+        self.mass_add_addresses_btn = QtWidgets.QPushButton("Добавить адреса")
+        self.mass_add_addresses_btn.clicked.connect(self._mass_add_addresses)
+        import_buttons.addWidget(self.mass_add_addresses_btn)
+        
+        self.mass_clear_addresses_btn = QtWidgets.QPushButton("Очистить список")
+        self.mass_clear_addresses_btn.clicked.connect(self._mass_clear_addresses)
+        import_buttons.addWidget(self.mass_clear_addresses_btn)
+        
+        import_layout.addLayout(import_buttons)
+        layout.addWidget(import_group)
+        
+        # Таблица адресов для рассылки
+        self.mass_table = QtWidgets.QTableWidget(0, 5)
+        self.mass_table.setHorizontalHeaderLabels([
+            'Адрес получателя', 'Статус', 'Отправлено раз', 'Последний хэш', 'Время'
+        ])
+        self.mass_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        self.mass_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
+        self.mass_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.mass_table.customContextMenuRequested.connect(self._mass_table_context_menu)
+        layout.addWidget(self.mass_table)
+        
+        # Статистика
+        stats_group = QtWidgets.QGroupBox("Статистика")
+        stats_layout = QtWidgets.QHBoxLayout(stats_group)
+        
+        self.mass_total_addresses_label = QtWidgets.QLabel("Всего адресов: 0")
+        stats_layout.addWidget(self.mass_total_addresses_label)
+        
+        self.mass_unique_addresses_label = QtWidgets.QLabel("Уникальных: 0")
+        stats_layout.addWidget(self.mass_unique_addresses_label)
+        
+        self.mass_sent_count_label = QtWidgets.QLabel("Отправлено: 0")
+        stats_layout.addWidget(self.mass_sent_count_label)
+        
+        self.mass_error_count_label = QtWidgets.QLabel("Ошибок: 0")
+        stats_layout.addWidget(self.mass_error_count_label)
+        
+        layout.addWidget(stats_group)
+        
+        # Настройки рассылки
+        settings_group = QtWidgets.QGroupBox("Настройки рассылки")
+        settings_layout = QtWidgets.QGridLayout(settings_group)
+        
+        # Выбор токена
+        settings_layout.addWidget(QtWidgets.QLabel("Токен:"), 0, 0)
+        self.mass_token_combo = QtWidgets.QComboBox()
+        self.mass_token_combo.addItems(['PLEX', 'USDT', 'BNB', 'Другой...'])
+        self.mass_token_combo.currentTextChanged.connect(self._mass_token_changed)
+        settings_layout.addWidget(self.mass_token_combo, 0, 1)
+        
+        # Адрес контракта для произвольного токена
+        self.mass_custom_token_edit = QtWidgets.QLineEdit()
+        self.mass_custom_token_edit.setPlaceholderText("Адрес контракта токена (0x...)")
+        self.mass_custom_token_edit.setEnabled(False)
+        settings_layout.addWidget(self.mass_custom_token_edit, 0, 2)
+        
+        # Сумма для отправки
+        settings_layout.addWidget(QtWidgets.QLabel("Сумма:"), 1, 0)
+        self.mass_amount_spin = QtWidgets.QDoubleSpinBox()
+        self.mass_amount_spin.setRange(0.00000001, 1000000)
+        self.mass_amount_spin.setDecimals(8)
+        self.mass_amount_spin.setValue(0.05)  # По умолчанию 0.05
+        settings_layout.addWidget(self.mass_amount_spin, 1, 1)
+        
+        # Интервал между отправками
+        settings_layout.addWidget(QtWidgets.QLabel("Интервал (сек):"), 2, 0)
+        self.mass_interval_spin = QtWidgets.QSpinBox()
+        self.mass_interval_spin.setRange(1, 600)
+        self.mass_interval_spin.setValue(5)  # 5 секунд по умолчанию
+        settings_layout.addWidget(self.mass_interval_spin, 2, 1)
+        
+        # Количество циклов
+        settings_layout.addWidget(QtWidgets.QLabel("Количество циклов:"), 3, 0)
+        self.mass_cycles_spin = QtWidgets.QSpinBox()
+        self.mass_cycles_spin.setRange(1, 100)
+        self.mass_cycles_spin.setValue(1)  # 1 цикл по умолчанию
+        settings_layout.addWidget(self.mass_cycles_spin, 3, 1)
+        
+        # Режим рассылки
+        settings_layout.addWidget(QtWidgets.QLabel("Режим:"), 4, 0)
+        self.mass_mode_combo = QtWidgets.QComboBox()
+        self.mass_mode_combo.addItems(['Последовательный', 'Параллельный (3 потока)', 'Параллельный (5 потоков)'])
+        settings_layout.addWidget(self.mass_mode_combo, 4, 1)
+        
+        # Отображение текущей цены газа
+        self.mass_gas_price_label = QtWidgets.QLabel(f"Цена газа: {self.cfg.get_gas_price()} Gwei")
+        settings_layout.addWidget(self.mass_gas_price_label, 5, 0, 1, 2)
+        
+        layout.addWidget(settings_group)
+        
+        # Управление рассылкой
+        control_group = QtWidgets.QGroupBox("Управление рассылкой")
+        control_layout = QtWidgets.QVBoxLayout(control_group)
+        
+        # Кнопки управления
+        control_buttons = QtWidgets.QHBoxLayout()
+        
+        self.mass_estimate_btn = QtWidgets.QPushButton("Оценить стоимость")
+        self.mass_estimate_btn.clicked.connect(self._mass_estimate_cost)
+        control_buttons.addWidget(self.mass_estimate_btn)
+        
+        self.mass_start_btn = QtWidgets.QPushButton("Начать рассылку")
+        self.mass_start_btn.clicked.connect(self._mass_start_distribution)
+        control_buttons.addWidget(self.mass_start_btn)
+        
+        self.mass_pause_btn = QtWidgets.QPushButton("Пауза")
+        self.mass_pause_btn.setEnabled(False)
+        self.mass_pause_btn.clicked.connect(self._mass_pause_distribution)
+        control_buttons.addWidget(self.mass_pause_btn)
+        
+        self.mass_resume_btn = QtWidgets.QPushButton("Продолжить")
+        self.mass_resume_btn.setEnabled(False)
+        self.mass_resume_btn.clicked.connect(self._mass_resume_distribution)
+        control_buttons.addWidget(self.mass_resume_btn)
+        
+        self.mass_stop_btn = QtWidgets.QPushButton("Остановить")
+        self.mass_stop_btn.setEnabled(False)
+        self.mass_stop_btn.clicked.connect(self._mass_stop_distribution)
+        control_buttons.addWidget(self.mass_stop_btn)
+        
+        control_layout.addLayout(control_buttons)
+        
+        # Прогресс
+        self.mass_progress = QtWidgets.QProgressBar()
+        control_layout.addWidget(self.mass_progress)
+        
+        self.mass_progress_label = QtWidgets.QLabel("Готово к работе")
+        control_layout.addWidget(self.mass_progress_label)
+        
+        layout.addWidget(control_group)
+        
+        # Кнопки экспорта и сохранения
+        export_buttons = QtWidgets.QHBoxLayout()
+        
+        self.mass_save_list_btn = QtWidgets.QPushButton("Сохранить список")
+        self.mass_save_list_btn.clicked.connect(self._mass_save_list)
+        export_buttons.addWidget(self.mass_save_list_btn)
+        
+        self.mass_load_list_btn = QtWidgets.QPushButton("Загрузить список")
+        self.mass_load_list_btn.clicked.connect(self._mass_load_list)
+        export_buttons.addWidget(self.mass_load_list_btn)
+        
+        self.mass_export_results_btn = QtWidgets.QPushButton("Экспорт результатов")
+        self.mass_export_results_btn.clicked.connect(self._mass_export_results)
+        export_buttons.addWidget(self.mass_export_results_btn)
+        
+        layout.addLayout(export_buttons)
+        
+        # Инициализация переменных для управления рассылкой
+        self.mass_distribution_active = False
+        self.mass_distribution_paused = False
+        self.mass_distribution_thread = None
+        self.mass_current_cycle = 0
+        self.mass_total_sent = 0
+        self.mass_errors_count = 0
+        
+        return w
     
     def _mass_paste_addresses(self):
         """Вставка адресов из буфера обмена"""
@@ -6621,32 +5432,6 @@ if __name__ == '__main__':
                             )
                             
                             logger.info(f"Отправлено {amount} {token_name} на {address}, tx: {tx_hash}")
-
-                            # Пытаемся получить подтверждение (receipt) для дополнительного доказательства выплаты
-                            try:
-                                w3 = self.rpc.web3()
-                                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-                                if receipt and receipt.status == 1:
-                                    logger.info(f"Подтверждена транзакция (receipt) для {address}: {tx_hash}")
-                                else:
-                                    logger.warning(f"Транзакция не подтверждена (status!=1) пока: {tx_hash}")
-                            except Exception as rec_e:
-                                logger.warning(f"Не удалось получить receipt для {tx_hash}: {rec_e}")
-
-                            # Отправляем данные в вкладку 'Очередь отправки' (таблица завершенных)
-                            try:
-                                completed_item = {
-                                    'status': 'success',
-                                    'address': address,
-                                    'token': token_name,
-                                    'amount': amount,
-                                    'tx_hash': tx_hash,
-                                    'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                }
-                                # Используем уже существующий сигнал для добавления строки в completed_table
-                                self.completed_item_signal.emit(completed_item)
-                            except Exception as emit_e:
-                                logger.error(f"Не удалось отправить элемент массовой рассылки в очередь: {emit_e}")
                         else:
                             raise Exception("Не удалось получить хэш транзакции")
                             
@@ -6668,20 +5453,6 @@ if __name__ == '__main__':
                         )
                         
                         logger.error(f"Ошибка отправки на {address}: {e}")
-
-                        # Также отражаем неуспешную попытку в completed_table очереди
-                        try:
-                            failed_item = {
-                                'status': 'failed',
-                                'address': address,
-                                'token': token_name,
-                                'amount': amount,
-                                'tx_hash': None,
-                                'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                            }
-                            self.completed_item_signal.emit(failed_item)
-                        except Exception as emit_e:
-                            logger.error(f"Не удалось отправить ошибочный элемент массовой рассылки в очередь: {emit_e}")
                     
                     completed_transactions += 1
                     
@@ -6714,82 +5485,116 @@ if __name__ == '__main__':
     def _mass_update_table_status(self, row, status, tx_hash, time_str):
         """Обновление статуса в таблице"""
         try:
-            # Используем сигнал для обновления UI из потока
+            # Используем прямой вызов метода обновления UI через сигнал
             if status == "Отправка...":
                 self.update_address_status.emit(row, "⟳ Отправка...")
             elif status == "Успешно":
                 self.update_address_status.emit(row, "✓ Успешно")
+                # Обновляем счетчик отправок
+                if row < self.mass_table.rowCount():
+                    sent_count = int(self.mass_table.item(row, 2).text()) + 1
+                    QtCore.QMetaObject.invokeMethod(
+                        self.mass_table, "setItem",
+                        QtCore.Qt.QueuedConnection,
+                        QtCore.Q_ARG(int, row),
+                        QtCore.Q_ARG(int, 2),
+                        QtCore.Q_ARG(QtWidgets.QTableWidgetItem, QtWidgets.QTableWidgetItem(f"{sent_count}/{self.mass_cycles_spin.value()}"))
+                    )
+                    # Обновляем хэш транзакции
+                    if tx_hash:
+                        hash_item = QtWidgets.QTableWidgetItem(tx_hash[:10] + "..." + tx_hash[-6:])
+                        hash_item.setToolTip(tx_hash)
+                        QtCore.QMetaObject.invokeMethod(
+                            self.mass_table, "setItem",
+                            QtCore.Qt.QueuedConnection,
+                            QtCore.Q_ARG(int, row),
+                            QtCore.Q_ARG(int, 3),
+                            QtCore.Q_ARG(QtWidgets.QTableWidgetItem, hash_item)
+                        )
+                    # Обновляем время
+                    if time_str:
+                        QtCore.QMetaObject.invokeMethod(
+                            self.mass_table, "setItem",
+                            QtCore.Qt.QueuedConnection,
+                            QtCore.Q_ARG(int, row),
+                            QtCore.Q_ARG(int, 4),
+                            QtCore.Q_ARG(QtWidgets.QTableWidgetItem, QtWidgets.QTableWidgetItem(time_str))
+                        )
             elif status == "Ошибка":
                 self.update_address_status.emit(row, "✗ Ошибка")
-            else:
-                self.update_address_status.emit(row, status)
+                # Обновляем время ошибки
+                if time_str:
+                    QtCore.QMetaObject.invokeMethod(
+                        self.mass_table, "setItem",
+                        QtCore.Qt.QueuedConnection,
+                        QtCore.Q_ARG(int, row),
+                        QtCore.Q_ARG(int, 4),
+                        QtCore.Q_ARG(QtWidgets.QTableWidgetItem, QtWidgets.QTableWidgetItem(time_str))
+                    )
             
-            # Обновляем статистику
-            self._mass_update_statistics()
-            
-            # Обновляем данные через слот в основном потоке
+            # Обновляем общую статистику
             QtCore.QMetaObject.invokeMethod(
-                self, 
-                "_update_table_item_data",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(int, row),
-                QtCore.Q_ARG(str, status),
-                QtCore.Q_ARG(str, tx_hash or ""),
-                QtCore.Q_ARG(str, time_str or "")
+                self, "_mass_update_statistics",
+                QtCore.Qt.QueuedConnection
             )
-            
         except Exception as e:
             logger.error(f"Ошибка обновления статуса: {e}")
     
-    @QtCore.pyqtSlot(int, str, str, str)
-    def _update_table_item_data(self, row, status, tx_hash, time_str):
-        """Слот для обновления данных таблицы в основном потоке"""
-        try:
-            if row < self.mass_table.rowCount():
-                # Обновляем счетчик отправок
-                current_count = int(self.mass_table.item(row, 2).text().split('/')[0])
-                new_count = current_count + 1
-                count_item = QtWidgets.QTableWidgetItem(f"{new_count}/{self.mass_cycles_spin.value()}")
-                self.mass_table.setItem(row, 2, count_item)
-                
-                # Обновляем хэш транзакции
-                if tx_hash:
-                    hash_item = QtWidgets.QTableWidgetItem(tx_hash[:10] + "..." + tx_hash[-6:])
-                    hash_item.setToolTip(tx_hash)
-                    self.mass_table.setItem(row, 3, hash_item)
-                
-                # Обновляем время
-                if time_str:
-                    time_item = QtWidgets.QTableWidgetItem(time_str)
-                    self.mass_table.setItem(row, 4, time_item)
-                    
-        except Exception as e:
-            logger.error(f"Ошибка обновления данных таблицы: {e}")
-    
     def _mass_update_sent_count(self, row, count):
         """Обновление счетчика отправок"""
-        try:
-            QtCore.QMetaObject.invokeMethod(
-                self, 
-                "_update_sent_count_slot",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(int, row),
-                QtCore.Q_ARG(int, count)
-            )
-        except Exception as e:
-            logger.error(f"Ошибка обновления счетчика отправок: {e}")
-    
-    @QtCore.pyqtSlot(int, int)
-    def _update_sent_count_slot(self, row, count):
-        """Слот для обновления счетчика отправок в основном потоке"""
-        try:
+        def update():
             if row < self.mass_table.rowCount():
-                count_item = QtWidgets.QTableWidgetItem(str(count))
-                self.mass_table.setItem(row, 2, count_item)
-        except Exception as e:
-            logger.error(f"Ошибка обновления счетчика в слоте: {e}")
+                self.mass_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(count)))
+        
+        QtCore.QMetaObject.invokeMethod(
+            self, lambda: update(),
+            QtCore.Qt.QueuedConnection
+        )
     
-    # Удалено: старая версия _mass_distribution_finished (заменена в другом месте или в новой вкладке)
+    @QtCore.pyqtSlot()
+    def _mass_distribution_finished(self):
+        """Завершение массовой рассылки"""
+        self.mass_start_btn.setEnabled(True)
+        self.mass_pause_btn.setEnabled(False)
+        self.mass_resume_btn.setEnabled(False)
+        self.mass_stop_btn.setEnabled(False)
+        self.mass_progress_label.setText(f"Завершено: {self.mass_total_sent} успешных, {self.mass_errors_count} ошибок")
+        
+        QtWidgets.QMessageBox.information(
+            self, "Рассылка завершена",
+            f"Массовая рассылка завершена!\n\n"
+            f"Успешно отправлено: {self.mass_total_sent}\n"
+            f"Ошибок: {self.mass_errors_count}"
+        )
+    
+    def _mass_pause_distribution(self):
+        """Пауза рассылки"""
+        self.mass_distribution_paused = True
+        self.mass_pause_btn.setEnabled(False)
+        self.mass_resume_btn.setEnabled(True)
+        self.mass_progress_label.setText("Рассылка приостановлена")
+        logger.info("Массовая рассылка приостановлена")
+    
+    def _mass_resume_distribution(self):
+        """Возобновление рассылки"""
+        self.mass_distribution_paused = False
+        self.mass_pause_btn.setEnabled(True)
+        self.mass_resume_btn.setEnabled(False)
+        logger.info("Массовая рассылка возобновлена")
+    
+    def _mass_stop_distribution(self):
+        """Остановка рассылки"""
+        reply = QtWidgets.QMessageBox.question(
+            self, 'Подтверждение',
+            'Остановить рассылку?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No
+        )
+        
+        if reply == QtWidgets.QMessageBox.Yes:
+            self.mass_distribution_active = False
+            self.mass_distribution_paused = False
+            logger.info("Массовая рассылка остановлена пользователем")
     
     def _mass_save_list(self):
         """Сохранение списка адресов"""
@@ -6941,7 +5746,7 @@ if __name__ == '__main__':
             
             # Подписание и отправка
             signed_tx = w3.eth.account.sign_transaction(tx, self.pk)
-            tx_hash = send_raw_tx(w3, signed_tx.rawTransaction)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             
             return tx_hash.hex()
             
@@ -6978,7 +5783,7 @@ if __name__ == '__main__':
             
             # Подписание и отправка
             signed_tx = w3.eth.account.sign_transaction(tx, self.pk)
-            tx_hash = send_raw_tx(w3, signed_tx.rawTransaction)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
             
             return tx_hash.hex()
             
@@ -7002,7 +5807,7 @@ if __name__ == '__main__':
             # Добавляем путь к MCP компонентам ДС
             ds_components_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
-                "ds_components"
+                "..", "Эксперимент", "МСР", "WalletSender_MCP", "ds_components"
             )
             ds_components_path = os.path.normpath(ds_components_path)
             
@@ -7033,9 +5838,8 @@ if __name__ == '__main__':
                     logger.info("✅ Вкладка ДС успешно инициализирована с полным функционалом")
                     return ds_controller
                     
-                except ImportError:
-                    # Тихо переходим к fallback без лишнего спама
-                    pass
+                except ImportError as e:
+                    logger.warning(f"Ошибка импорта компонентов ДС: {e}")
                     
             else:
                 logger.warning(f"Путь к компонентам ДС не найден: {ds_components_path}")
@@ -7410,59 +6214,48 @@ if __name__ == '__main__':
         """Создание вкладки для массовой рассылки токенов"""
         w = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(w)
-
-        # Блок информации о кошельке отправителя (адрес + балансы)
-        wallet_group = QtWidgets.QGroupBox("Кошелек отправителя")
-        wallet_layout = QtWidgets.QHBoxLayout(wallet_group)
-        self.mass_sender_address_label = QtWidgets.QLabel("Адрес: -")
-        self.mass_balance_plex_label = QtWidgets.QLabel("PLEX: -")
-        self.mass_balance_bnb_label = QtWidgets.QLabel("BNB: -")
-        self.mass_balance_usdt_label = QtWidgets.QLabel("USDT: -")
-        wallet_layout.addWidget(self.mass_sender_address_label)
-        wallet_layout.addWidget(self.mass_balance_plex_label)
-        wallet_layout.addWidget(self.mass_balance_bnb_label)
-        wallet_layout.addWidget(self.mass_balance_usdt_label)
-        self.mass_refresh_wallet_btn = QtWidgets.QPushButton("↻")
-        self.mass_refresh_wallet_btn.setFixedWidth(30)
-        self.mass_refresh_wallet_btn.setToolTip("Обновить балансы")
-        self.mass_refresh_wallet_btn.clicked.connect(self._mass_update_wallet_info)
-        wallet_layout.addWidget(self.mass_refresh_wallet_btn)
-        layout.addWidget(wallet_group)
-        QtCore.QTimer.singleShot(300, self._mass_update_wallet_info)
-
+        
         # Группа импорта адресов
         import_group = QtWidgets.QGroupBox("Импорт адресов")
         import_layout = QtWidgets.QVBoxLayout(import_group)
-
+        
         # Кнопки импорта
         import_buttons_layout = QtWidgets.QHBoxLayout()
+        
         self.mass_import_clipboard_btn = QtWidgets.QPushButton("Из буфера обмена")
         self.mass_import_clipboard_btn.clicked.connect(self._mass_import_from_clipboard)
         import_buttons_layout.addWidget(self.mass_import_clipboard_btn)
+        
         self.mass_import_excel_btn = QtWidgets.QPushButton("Из Excel")
         self.mass_import_excel_btn.clicked.connect(self._mass_import_from_excel)
         import_buttons_layout.addWidget(self.mass_import_excel_btn)
+        
         self.mass_clear_addresses_btn = QtWidgets.QPushButton("Очистить список")
         self.mass_clear_addresses_btn.clicked.connect(self._mass_clear_addresses)
         import_buttons_layout.addWidget(self.mass_clear_addresses_btn)
+        
         import_layout.addLayout(import_buttons_layout)
-
+        
         # Таблица адресов
-        self.mass_table = QtWidgets.QTableWidget(0, 4)
-        self.mass_table.setHorizontalHeaderLabels(['№', 'Адрес', 'Статус', 'Прогресс'])
-        header = self.mass_table.horizontalHeader()
-        if header:
-            header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        self.mass_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
-        import_layout.addWidget(self.mass_table)
-        # Информация
+        self.mass_addresses_table = QtWidgets.QTableWidget(0, 4)
+        self.mass_addresses_table.setHorizontalHeaderLabels([
+            '№', 'Адрес', 'Статус', 'Прогресс'
+        ])
+        self.mass_addresses_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.mass_addresses_table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
+        import_layout.addWidget(self.mass_addresses_table)
+        
+        # Информация об импорте
         self.mass_import_info = QtWidgets.QLabel("Адресов загружено: 0")
         import_layout.addWidget(self.mass_import_info)
+        
         layout.addWidget(import_group)
-
-        # Настройки
+        
+        # Группа настроек рассылки
         settings_group = QtWidgets.QGroupBox("Настройки рассылки")
         settings_layout = QtWidgets.QFormLayout(settings_group)
+        
+        # Выбор токена
         token_layout = QtWidgets.QHBoxLayout()
         self.mass_token_group = QtWidgets.QButtonGroup(w)
         self.mass_plex_radio = QtWidgets.QRadioButton('PLEX ONE')
@@ -7470,80 +6263,118 @@ if __name__ == '__main__':
         self.mass_bnb_radio = QtWidgets.QRadioButton('BNB')
         self.mass_custom_radio = QtWidgets.QRadioButton('Другой токен')
         self.mass_plex_radio.setChecked(True)
-        for btn in [self.mass_plex_radio, self.mass_usdt_radio, self.mass_bnb_radio, self.mass_custom_radio]:
-            self.mass_token_group.addButton(btn)
-            token_layout.addWidget(btn)
+        
+        self.mass_token_group.addButton(self.mass_plex_radio)
+        self.mass_token_group.addButton(self.mass_usdt_radio)
+        self.mass_token_group.addButton(self.mass_bnb_radio)
+        self.mass_token_group.addButton(self.mass_custom_radio)
+        
+        token_layout.addWidget(self.mass_plex_radio)
+        token_layout.addWidget(self.mass_usdt_radio)
+        token_layout.addWidget(self.mass_bnb_radio)
+        token_layout.addWidget(self.mass_custom_radio)
+        
         settings_layout.addRow("Токен:", token_layout)
+        
+        # Поле для кастомного токена
         self.mass_custom_token_address = QtWidgets.QLineEdit()
         self.mass_custom_token_address.setPlaceholderText("Адрес контракта токена (0x...)")
         self.mass_custom_token_address.setEnabled(False)
         self.mass_custom_radio.toggled.connect(self.mass_custom_token_address.setEnabled)
         settings_layout.addRow("Адрес токена:", self.mass_custom_token_address)
+        
+        # Сумма для отправки
         self.mass_amount = QtWidgets.QDoubleSpinBox()
         self.mass_amount.setRange(0.00000001, 1000000)
         self.mass_amount.setDecimals(8)
-        self.mass_amount.setValue(0.05)
+        self.mass_amount.setValue(0.05)  # По умолчанию 0.05 токена
         settings_layout.addRow("Сумма на адрес:", self.mass_amount)
+        
+        # Интервал между отправками
         self.mass_interval = QtWidgets.QSpinBox()
         self.mass_interval.setRange(1, 600)
-        self.mass_interval.setValue(5)
+        self.mass_interval.setValue(5)  # 5 секунд по умолчанию
         settings_layout.addRow("Интервал (сек):", self.mass_interval)
+        
+        # Количество циклов
         self.mass_cycles = QtWidgets.QSpinBox()
         self.mass_cycles.setRange(1, 100)
-        self.mass_cycles.setValue(10)
+        self.mass_cycles.setValue(10)  # 10 циклов по умолчанию
         settings_layout.addRow("Количество циклов:", self.mass_cycles)
+        
         layout.addWidget(settings_group)
-
-        # Управление
+        
+        # Группа управления рассылкой
         control_group = QtWidgets.QGroupBox("Управление рассылкой")
         control_layout = QtWidgets.QVBoxLayout(control_group)
-        buttons = QtWidgets.QHBoxLayout()
+        
+        # Кнопки управления
+        control_buttons_layout = QtWidgets.QHBoxLayout()
+        
         self.mass_start_btn = QtWidgets.QPushButton("Начать рассылку")
         self.mass_start_btn.clicked.connect(self._mass_start_distribution)
-        buttons.addWidget(self.mass_start_btn)
+        control_buttons_layout.addWidget(self.mass_start_btn)
+        
         self.mass_pause_btn = QtWidgets.QPushButton("Пауза")
-        self.mass_pause_btn.setEnabled(False)
         self.mass_pause_btn.clicked.connect(self._mass_pause_distribution)
-        buttons.addWidget(self.mass_pause_btn)
+        self.mass_pause_btn.setEnabled(False)
+        control_buttons_layout.addWidget(self.mass_pause_btn)
+        
         self.mass_resume_btn = QtWidgets.QPushButton("Продолжить")
-        self.mass_resume_btn.setEnabled(False)
         self.mass_resume_btn.clicked.connect(self._mass_resume_distribution)
-        buttons.addWidget(self.mass_resume_btn)
+        self.mass_resume_btn.setEnabled(False)
+        control_buttons_layout.addWidget(self.mass_resume_btn)
+        
         self.mass_stop_btn = QtWidgets.QPushButton("Остановить")
-        self.mass_stop_btn.setEnabled(False)
         self.mass_stop_btn.clicked.connect(self._mass_stop_distribution)
-        buttons.addWidget(self.mass_stop_btn)
-        control_layout.addLayout(buttons)
+        self.mass_stop_btn.setEnabled(False)
+        control_buttons_layout.addWidget(self.mass_stop_btn)
+        
+        control_layout.addLayout(control_buttons_layout)
+        
+        # Прогресс рассылки
         self.mass_progress = QtWidgets.QProgressBar()
         control_layout.addWidget(self.mass_progress)
+        
+        # Статус рассылки
         self.mass_status_label = QtWidgets.QLabel("Готов к рассылке")
         control_layout.addWidget(self.mass_status_label)
+        
+        # Детальная информация
         info_layout = QtWidgets.QHBoxLayout()
         self.mass_current_cycle_label = QtWidgets.QLabel("Цикл: 0/0")
         self.mass_sent_count_label = QtWidgets.QLabel("Отправлено: 0")
         self.mass_errors_label = QtWidgets.QLabel("Ошибок: 0")
-        for wgt in [self.mass_current_cycle_label, self.mass_sent_count_label, self.mass_errors_label]:
-            info_layout.addWidget(wgt)
+        info_layout.addWidget(self.mass_current_cycle_label)
+        info_layout.addWidget(self.mass_sent_count_label)
+        info_layout.addWidget(self.mass_errors_label)
         control_layout.addLayout(info_layout)
+        
         layout.addWidget(control_group)
-
+        
+        # Группа статистики
         stats_group = QtWidgets.QGroupBox("Статистика")
         stats_layout = QtWidgets.QFormLayout(stats_group)
+        
         self.mass_total_sent_label = QtWidgets.QLabel("0")
         self.mass_total_amount_label = QtWidgets.QLabel("0")
         self.mass_gas_spent_label = QtWidgets.QLabel("0 BNB")
         self.mass_gas_price_label = QtWidgets.QLabel(f"Цена газа: {self.cfg.get_gas_price()} Gwei")
+        
         stats_layout.addRow("Всего транзакций:", self.mass_total_sent_label)
         stats_layout.addRow("Всего отправлено:", self.mass_total_amount_label)
         stats_layout.addRow("Потрачено на газ:", self.mass_gas_spent_label)
         stats_layout.addRow("", self.mass_gas_price_label)
+        
         layout.addWidget(stats_group)
-
+        
+        # Инициализация переменных состояния
         self.mass_distribution_active = False
         self.mass_distribution_paused = False
         self.mass_distribution_thread = None
         self.mass_addresses = []
         self.mass_current_distribution_id = None
+        
         return w
     
     def _mass_import_from_clipboard(self):
@@ -7646,32 +6477,32 @@ if __name__ == '__main__':
     def _mass_add_addresses(self, addresses):
         """Добавление адресов в таблицу"""
         # Очищаем текущий список
-        self.mass_table.setRowCount(0)
-        self.mass_addresses = []
+        self.mass_addresses_table.setRowCount(0)
+        self.mass_addresses = addresses
+        
         # Добавляем адреса в таблицу
         for i, addr in enumerate(addresses):
-            if not addr:
-                continue
-            row = self.mass_table.rowCount()
-            self.mass_table.insertRow(row)
+            row = self.mass_addresses_table.rowCount()
+            self.mass_addresses_table.insertRow(row)
+            
             # Номер
-            self.mass_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(i + 1)))
+            self.mass_addresses_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(i + 1)))
+            
             # Адрес
-            self.mass_table.setItem(row, 1, QtWidgets.QTableWidgetItem(addr))
+            self.mass_addresses_table.setItem(row, 1, QtWidgets.QTableWidgetItem(addr))
+            
             # Статус
             status_item = QtWidgets.QTableWidgetItem("Ожидание")
-            self.mass_table.setItem(row, 2, status_item)
+            self.mass_addresses_table.setItem(row, 2, status_item)
+            
             # Прогресс
-            self.mass_table.setItem(row, 3, QtWidgets.QTableWidgetItem("0/0"))
-        # Обновляем список и инфо
-        self.mass_addresses = [a for a in addresses if a]
-        if hasattr(self, 'mass_import_info'):
-            self.mass_import_info.setText(f"Адресов загружено: {len(self.mass_addresses)}")
-        logger.info(f"Импортировано {len(self.mass_addresses)} адресов в таблицу")
+            self.mass_addresses_table.setItem(row, 3, QtWidgets.QTableWidgetItem("0/0"))
+        
+        self.mass_import_info.setText(f"Адресов загружено: {len(addresses)}")
     
     def _mass_clear_addresses(self):
         """Очистка списка адресов"""
-        self.mass_table.setRowCount(0)
+        self.mass_addresses_table.setRowCount(0)
         self.mass_addresses = []
         self.mass_import_info.setText("Адресов загружено: 0")
         logger.info("Список адресов очищен")
@@ -7781,29 +6612,31 @@ if __name__ == '__main__':
         self.mass_distribution_thread = threading.Thread(
             target=self._mass_distribution_worker,
             args=(token_type, token_address, amount, interval, cycles),
-            daemon=False  # Изменено: убираем daemon=True чтобы приложение не завершалось
+            daemon=True
         )
         self.mass_distribution_thread.start()
         
         logger.info(f"Запущена массовая рассылка: {token_type}, {amount} x {cycles} циклов")
     
-    def _mass_distribution_worker(self, token_type: str, token_address: str, amount: float, interval: int, cycles: int) -> None:
+    def _mass_distribution_worker(self, token_type, token_address, amount, interval, cycles):
         """Рабочий поток для массовой рассылки"""
-        logger.info("🔄 Начат рабочий поток массовой рассылки")
         try:
             total_sent = 0
             total_errors = 0
-            total_gas_spent: float = 0.0
+            total_gas_spent = 0
             
             for cycle in range(1, cycles + 1):
                 if not self.mass_distribution_active:
-                    logger.info(f"⏹️ Массовая рассылка остановлена на цикле {cycle}")
                     break
                 
                 # Обновляем информацию о цикле
                 self.update_status_signal.emit(f"Цикл {cycle}/{cycles}")
-                # Безопасно обновляем метку в GUI-потоке
-                self.update_mass_cycle_label.emit(f"Цикл: {cycle}/{cycles}")
+                QtCore.QMetaObject.invokeMethod(
+                    self.mass_current_cycle_label,
+                    "setText",
+                    QtCore.Qt.QueuedConnection,
+                    QtCore.Q_ARG(str, f"Цикл: {cycle}/{cycles}")
+                )
                 
                 for i, address in enumerate(self.mass_addresses):
                     if not self.mass_distribution_active:
@@ -7822,15 +6655,11 @@ if __name__ == '__main__':
                     try:
                         # Отправляем транзакцию
                         if token_type == 'BNB':
-                            result = self._send_bnb(address, amount)
-                            tx_hash = str(result.get('tx_hash', ''))
-                            gas_used = float(result.get('gas_used', 0.0))
+                            tx_hash, gas_used = self._send_bnb(address, amount)
                         else:
-                            result = self._send_token(address, amount, token_address)
-                            tx_hash = str(result.get('tx_hash', ''))
-                            gas_used = float(result.get('gas_used', 0.0))
+                            tx_hash, gas_used = self._send_token(address, amount, token_address)
                         
-                        if tx_hash and self.mass_current_distribution_id is not None:
+                        if tx_hash:
                             total_sent += 1
                             total_gas_spent += gas_used
                             
@@ -7845,8 +6674,7 @@ if __name__ == '__main__':
                             
                             # Обновляем статус
                             self._update_address_status(i, "Успешно", QtGui.QColor('#00FF00'))
-                            # Отправляем прогресс через сигнал (без прямого вызова UI метода)
-                            self.address_progress_signal.emit(i, cycle, cycles)
+                            self._update_address_progress(i, cycle, cycles)
                             
                             logger.info(f"Отправлено {amount} {token_type} на {address}, цикл {cycle}")
                         else:
@@ -7856,15 +6684,14 @@ if __name__ == '__main__':
                         total_errors += 1
                         
                         # Сохраняем ошибку в БД
-                        if self.mass_current_distribution_id is not None:
-                            add_mass_distribution_item(
-                                self.mass_current_distribution_id,
-                                address,
-                                cycle,
-                                '',
-                                'error',
-                                str(e)
-                            )
+                        add_mass_distribution_item(
+                            self.mass_current_distribution_id,
+                            address,
+                            cycle,
+                            '',
+                            'error',
+                            str(e)
+                        )
                         
                         # Обновляем статус
                         self._update_address_status(i, f"Ошибка: {str(e)[:30]}...", QtGui.QColor('#FF0000'))
@@ -7872,7 +6699,7 @@ if __name__ == '__main__':
                         logger.error(f"Ошибка отправки на {address}: {e}")
                     
                     # Обновляем общую статистику
-                    self.mass_stats_signal.emit(total_sent, total_errors, total_gas_spent, amount * total_sent)
+                    self._update_mass_statistics(total_sent, total_errors, total_gas_spent, amount * total_sent)
                     
                     # Прогресс
                     progress = int(((cycle - 1) * len(self.mass_addresses) + i + 1) / (cycles * len(self.mass_addresses)) * 100)
@@ -7892,23 +6719,19 @@ if __name__ == '__main__':
                 status = 'completed' if self.mass_distribution_active else 'cancelled'
                 update_mass_distribution_status(self.mass_current_distribution_id, status)
             
-            logger.info(f"✅ Массовая рассылка завершена. Отправлено: {total_sent}, ошибок: {total_errors}")
+            logger.info(f"Массовая рассылка завершена. Отправлено: {total_sent}, ошибок: {total_errors}")
         
         except Exception as e:
-            logger.error(f"🔴 Критическая ошибка в массовой рассылке: {e}")
-            import traceback
-            logger.error(f"Полный traceback: {traceback.format_exc()}")
+            logger.error(f"Критическая ошибка в массовой рассылке: {e}")
         
         finally:
-            logger.info("🔧 Восстанавливаем UI после массовой рассылки")
-            # Сбрасываем флаг состояния
+            # Восстанавливаем UI
             self.mass_distribution_active = False
-            # Инициируем завершение рассылки в GUI-потоке
-            try:
-                self.mass_distribution_finished_signal.emit()
-                logger.info("✅ UI восстановление инициировано")
-            except Exception as e:
-                logger.error(f"🔴 Ошибка при отправке сигнала завершения UI: {e}")
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "_mass_distribution_finished",
+                QtCore.Qt.QueuedConnection
+            )
     
     @QtCore.pyqtSlot()
     def _mass_distribution_finished(self):
@@ -7922,48 +6745,76 @@ if __name__ == '__main__':
         self.mass_clear_addresses_btn.setEnabled(True)
         self.mass_status_label.setText("Рассылка завершена")
     
-    def _update_address_status(self, row: int, status: str, color: Optional[str] = None) -> None:
+    def _update_address_status(self, row, status, color=None):
         """Обновление статуса адреса в таблице"""
-        # Используем сигнал для обновления UI из потока
-        if '✓' in status or 'Успешно' in status:
-            self.update_address_status.emit(row, "✓ Успешно")
-        elif '✗' in status or 'Ошибка' in status:
-            self.update_address_status.emit(row, "✗ Ошибка")
-        elif '⟳' in status or 'Отправка' in status:
-            self.update_address_status.emit(row, "⟳ Отправка...")
-        else:
-            self.update_address_status.emit(row, status)
-    
-    def _update_address_progress(self, row: int, current: int, total: int) -> None:
-        """(DEPRECATED) Оставлено для совместимости; теперь используем address_progress_signal напрямую"""
-        self.address_progress_signal.emit(row, current, total)
-    
-    @QtCore.pyqtSlot(int, int, int)
-    def _update_progress_item(self, row: int, current: int, total: int) -> None:
-        """Слот для обновления прогресса в основном потоке"""
         try:
-            if row < self.mass_table.rowCount():
-                progress_item = QtWidgets.QTableWidgetItem(f"{current}/{total}")
-                self.mass_table.setItem(row, 3, progress_item)
+            status_item = QtWidgets.QTableWidgetItem(status)
+            if color:
+                status_item.setBackground(color)
+            
+            QtCore.QMetaObject.invokeMethod(
+                self.mass_addresses_table,
+                "setItem",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(int, row),
+                QtCore.Q_ARG(int, 2),
+                QtCore.Q_ARG(QtWidgets.QTableWidgetItem, status_item)
+            )
         except Exception as e:
-            logger.error(f"Ошибка обновления элемента прогресса: {e}")
+            logger.error(f"Ошибка обновления статуса: {e}")
     
-    @QtCore.pyqtSlot(int, int, float, float)
-    def _update_mass_statistics(self, sent: int, errors: int, gas_spent: float, total_amount: float) -> None:
-        """Слот: обновление статистики рассылки (GUI-поток)"""
+    def _update_address_progress(self, row, current, total):
+        """Обновление прогресса адреса"""
         try:
-            if getattr(self, 'mass_sent_count_label', None):
-                self.mass_sent_count_label.setText(f"Отправлено: {sent}")
-            if getattr(self, 'mass_errors_label', None):
-                self.mass_errors_label.setText(f"Ошибок: {errors}")
-            if getattr(self, 'mass_total_sent_label', None):
-                self.mass_total_sent_label.setText(str(sent))
-            if getattr(self, 'mass_total_amount_label', None):
-                self.mass_total_amount_label.setText(f"{total_amount:.8f}")
-            if getattr(self, 'mass_gas_spent_label', None):
-                self.mass_gas_spent_label.setText(f"{gas_spent:.8f} BNB")
+            progress_item = QtWidgets.QTableWidgetItem(f"{current}/{total}")
+            
+            QtCore.QMetaObject.invokeMethod(
+                self.mass_addresses_table,
+                "setItem",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(int, row),
+                QtCore.Q_ARG(int, 3),
+                QtCore.Q_ARG(QtWidgets.QTableWidgetItem, progress_item)
+            )
         except Exception as e:
-            logger.error(f"Ошибка обновления статистики: {e}")
+            logger.error(f"Ошибка обновления прогресса: {e}")
+    
+    def _update_mass_statistics(self, sent, errors, gas_spent, total_amount):
+        """Обновление статистики рассылки"""
+        QtCore.QMetaObject.invokeMethod(
+            self.mass_sent_count_label,
+            "setText",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, f"Отправлено: {sent}")
+        )
+        
+        QtCore.QMetaObject.invokeMethod(
+            self.mass_errors_label,
+            "setText",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, f"Ошибок: {errors}")
+        )
+        
+        QtCore.QMetaObject.invokeMethod(
+            self.mass_total_sent_label,
+            "setText",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, str(sent))
+        )
+        
+        QtCore.QMetaObject.invokeMethod(
+            self.mass_total_amount_label,
+            "setText",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, f"{total_amount:.8f}")
+        )
+        
+        QtCore.QMetaObject.invokeMethod(
+            self.mass_gas_spent_label,
+            "setText",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, f"{gas_spent:.8f} BNB")
+        )
     
     def _mass_pause_distribution(self):
         """Приостановка массовой рассылки"""
@@ -7996,7 +6847,7 @@ if __name__ == '__main__':
             self.mass_status_label.setText("Рассылка остановлена")
             logger.info("Массовая рассылка остановлена пользователем")
     
-    def _send_bnb(self, to_address: str, amount: float) -> Dict[str, Union[str, float, bool]]:
+    def _send_bnb(self, to_address, amount):
         """Отправка BNB"""
         try:
             w3 = self.rpc.web3()
@@ -8020,24 +6871,20 @@ if __name__ == '__main__':
             
             # Подписываем и отправляем
             signed = account.sign_transaction(tx)
-            tx_hash = send_raw_tx(w3, signed.rawTransaction)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
             
             # Ждем подтверждения
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
             
-            gas_used = float(receipt['gasUsed']) * gas_price / 10**18
+            gas_used = receipt.gasUsed * gas_price / 10**18
             
-            return {
-                'tx_hash': tx_hash.hex(),
-                'gas_used': gas_used,
-                'success': True
-            }
+            return tx_hash.hex(), gas_used
         
         except Exception as e:
             logger.error(f"Ошибка отправки BNB: {e}")
             raise
     
-    def _send_token(self, to_address: str, amount: float, token_address: str) -> Dict[str, Union[str, float, bool]]:
+    def _send_token(self, to_address, amount, token_address):
         """Отправка токена"""
         try:
             w3 = self.rpc.web3()
@@ -8072,18 +6919,14 @@ if __name__ == '__main__':
             
             # Подписываем и отправляем
             signed = account.sign_transaction(tx)
-            tx_hash = send_raw_tx(w3, signed.rawTransaction)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
             
             # Ждем подтверждения
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
             
-            gas_used = float(receipt['gasUsed']) * gas_price / 10**18
+            gas_used = receipt.gasUsed * gas_price / 10**18
             
-            return {
-                'tx_hash': tx_hash.hex(),
-                'gas_used': gas_used,
-                'success': True
-            }
+            return tx_hash.hex(), gas_used
         
         except Exception as e:
             logger.error(f"Ошибка отправки токена: {e}")
@@ -8098,16 +6941,6 @@ if __name__ == "__main__":
     REFACTOR:MCP - Выделить инициализацию в отдельную функцию
     """
     app = QtWidgets.QApplication(sys.argv)
-    
-    # Регистрация Qt мета-типов для решения предупреждений при работе с сигналами
-    # Совместимость с PyQt5/PyQt6
-    try:
-        QtCore.qRegisterMetaType('QVector<int>')
-        QtCore.qRegisterMetaType('QTextCursor')
-    except AttributeError:
-        # В PyQt5 qRegisterMetaType может отсутствовать - это не критично
-        pass
-    
     win = MainWindow()
     win.show()
     sys.exit(app.exec_())

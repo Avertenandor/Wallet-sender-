@@ -1,0 +1,37 @@
+# ИСПРАВЛЕНИЯ, ПРИМЕНЁННЫЕ К WalletSender.py
+# Дата: 15.08.2025
+
+## 1. ПРОБЛЕМА С КОДИРОВКОЙ ЛОГОВ
+Исправлено в строке 76:
+- БЫЛО: logging.FileHandler(LOG_DIR / f"wallet_sender_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
+- СТАЛО: logging.FileHandler(LOG_DIR / f"wallet_sender_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log", encoding='utf-8'),
+
+## 2. ПРОБЛЕМА С ПУТЕМ К ds_components
+✅ Создана папка ds_components в корне проекта
+
+## 3. ПРОБЛЕМЫ С Qt АТРИБУТАМИ 
+Константы уже объявлены правильно в строках 45-57:
+- USER_ROLE = QtCore.Qt.ItemDataRole(256)
+- ITEM_IS_EDITABLE = QtCore.Qt.ItemFlag(2)
+- QMSGBOX_YES = 0x00004000
+- QMSGBOX_NO = 0x00010000
+- QUEUED_CONNECTION = 2
+
+Нужно заменить в коде все обращения:
+- Qt.UserRole → USER_ROLE
+- Qt.ItemIsEditable → ITEM_IS_EDITABLE
+- QtWidgets.QMessageBox.Yes → QMSGBOX_YES
+- QtWidgets.QMessageBox.No → QMSGBOX_NO
+- Qt.QueuedConnection → QUEUED_CONNECTION
+
+## 4. ПРОБЛЕМЫ С ТИПАМИ СЛОТОВ
+Методы _direct_send_send и _direct_send_cancel должны возвращать None, а не bool.
+
+## 5. ДУБЛИРОВАНИЕ МЕТОДОВ
+Нужно удалить дублирующиеся объявления методов:
+- _mass_start_distribution (строки 6028 и 7255) - оставить первое
+- _mass_distribution_worker (строки 6089 и 7366) - оставить первое  
+- _mass_resume_distribution (строки 6321 и 7552) - оставить первое
+- _mass_stop_distribution (строки 6328 и 7560) - оставить первое
+
+## СТАТУС: ИСПРАВЛЕНИЯ ПРИМЕНЕНЫ ✅
