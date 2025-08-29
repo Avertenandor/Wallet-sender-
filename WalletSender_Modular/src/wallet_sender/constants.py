@@ -34,6 +34,26 @@ DB_PATH = 'wallet_sender.db'
 LOGS_DIR = 'logs'
 CONFIG_DIR = 'config'
 
+# Gas limits
+GAS_LIMITS = {
+    'transfer': 21000,
+    'token_transfer': 100000,
+    'approve': 50000,
+    'swap': 300000
+}
+
+# ERC20 ABI
+ERC20_ABI = [
+    {"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"},
+    {"constant": False, "inputs": [{"name": "_spender", "type": "address"}, {"name": "_value", "type": "uint256"}], "name": "approve", "outputs": [{"name": "", "type": "bool"}], "type": "function"},
+    {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "type": "function"},
+    {"constant": False, "inputs": [{"name": "_to", "type": "address"}, {"name": "_value", "type": "uint256"}], "name": "transfer", "outputs": [{"name": "", "type": "bool"}], "type": "function"}
+]
+
+# Контракты для совместимости
+PLEX_CONTRACT = CONTRACTS['PLEX_ONE']
+USDT_CONTRACT = CONTRACTS['USDT']
+
 # GUI settings
 WINDOW_SIZE = (1400, 900)
 TAB_TITLES = {
