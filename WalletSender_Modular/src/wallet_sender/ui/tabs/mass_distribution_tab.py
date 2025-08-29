@@ -679,62 +679,382 @@ class MassDistributionTab(BaseTab):
         group.setLayout(layout)
         return group
 
-    # Дополнительные методы-заглушки для полноты функционала
+    # Реализация методов для работы с кошельком
     def connect_wallet(self):
         """Подключение кошелька"""
-        pass
+        if not self.web3 or not self.web3.is_connected():
+            self.log("❌ Нет подключения к BSC", "ERROR")
+            return
+            
+        wallet_input = self.wallet_input.toPlainText().strip()
         
+        if not wallet_input:
+            self.log("❌ Введите SEED фразу или приватный ключ", "ERROR")
+            return
+            
+        try:
+            if self.seed_radio.isChecked():
+                # Подключение через SEED фразу
+                if not Mnemonic:
+                    self.log("❌ Библиотека mnemonic не установлена", "ERROR")
+                    return
+                    
+                mnemo = Mnemonic("english")
+                if not mnemo.check(wallet_input):
+                    self.log("❌ Неверная SEED фраза", "ERROR")
+                    return
+                    
+                # Получение приватного ключа из seed
+                seed = mnemo.to_seed(wallet_input)
+                private_key = seed[:32].hex()
+                
+            else:
+                # Подключение через приватный ключ
+                private_key = wallet_input
+                if private_key.startswith('0x'):
+                    private_key = private_key[2:]
+                    
+            # Создание аккаунта
+            self.account = Account.from_key(private_key)
+            
+            # Обновление интерфейса
+            self.wallet_address_label.setText(f"Адрес: {self.account.address}")
+            self.connect_btn.setEnabled(False)
+            self.disconnect_btn.setEnabled(True)
+            self.refresh_btn.setEnabled(True)
+            
+            self.log(f"✅ Кошелек подключен: {self.account.address}", "SUCCESS")
+            
+            # Обновление балансов
+            self.update_balances()
+            
+        except Exception as e:
+            logger.error(f"Ошибка подключения кошелька: {e}")
+            self.log(f"❌ Ошибка подключения: {str(e)}", "ERROR")
+            
     def disconnect_wallet(self):
         """Отключение кошелька"""
-        pass
+        self.account = None
+        self.balances = {}
+        
+        # Остановка авто-обновления
+        self.balance_timer.stop()
+        self.auto_refresh_cb.setChecked(False)
+        
+        # Обновление интерфейса
+        self.wallet_address_label.setText("Адрес: Не подключен")
+        self.connect_btn.setEnabled(True)
+        self.disconnect_btn.setEnabled(False)
+        self.refresh_btn.setEnabled(False)
+        
+        # Сброс балансов
+        self.bnb_balance_label.setText("0.0")
+        self.plex_balance_label.setText("0.0")
+        self.usdt_balance_label.setText("0.0")
+        
+        self.log("🔌 Кошелек отключен", "INFO")
         
     def update_balances(self):
-        """Обновление балансов"""
-        pass
-        
+        """Обновление балансов токенов"""
+        if not self.account or not self.web3:
+            return
+            
+        try:
+            address = self.account.address
+            
+            # Получение баланса BNB
+            bnb_balance = self.web3.eth.get_balance(address)
+            bnb_formatted = self.web3.from_wei(bnb_balance, 'ether')
+            
+            # Получение баланса PLEX ONE
+            plex_contract = self.web3.eth.contract(
+                address=Web3.to_checksum_address(CONTRACTS['PLEX_ONE']),
+                abi=ERC20_ABI
+            )
+            plex_balance = plex_contract.functions.balanceOf(address).call()
+            plex_decimals = plex_contract.functions.decimals().call()
+            plex_formatted = plex_balance / (10 ** plex_decimals)
+            
+            # Получение баланса USDT
+            usdt_contract = self.web3.eth.contract(
+                address=Web3.to_checksum_address(CONTRACTS['USDT']),
+                abi=ERC20_ABI
+            )
+            usdt_balance = usdt_contract.functions.balanceOf(address).call()
+            usdt_decimals = usdt_contract.functions.decimals().call()
+            usdt_formatted = usdt_balance / (10 ** usdt_decimals)
+            
+            # Сохранение балансов
+            self.balances = {
+                'bnb': float(bnb_formatted),
+                'plex': float(plex_formatted),
+                'usdt': float(usdt_formatted)
+            }
+            
+            # Отправка сигнала об обновлении
+            self.balance_updated.emit(self.balances)
+            
+        except Exception as e:
+            logger.error(f"Ошибка обновления балансов: {e}")
+            self.log(f"❌ Ошибка обновления балансов: {str(e)}", "ERROR")
+            
     def _update_balance_display(self, balances: dict):
         """Обновление отображения балансов"""
-        pass
+        self.bnb_balance_label.setText(f"{balances.get('bnb', 0):.6f}")
+        self.plex_balance_label.setText(f"{balances.get('plex', 0):.2f}")
+        self.usdt_balance_label.setText(f"{balances.get('usdt', 0):.2f}")
         
     def _toggle_auto_refresh(self, enabled: bool):
-        """Переключение авто-обновления"""
-        pass
-        
+        """Переключение авто-обновления балансов"""
+        if enabled and self.account:
+            self.balance_timer.start(30000)  # 30 секунд
+            self.log("✅ Авто-обновление балансов включено", "INFO")
+        else:
+            self.balance_timer.stop()
+            self.log("🔄 Авто-обновление балансов отключено", "INFO")
+            
     def _init_services(self):
-        """Инициализация сервисов"""
-        pass
+        """Инициализация сервисов для работы с блокчейном"""
+        try:
+            if not self.wallet_manager:
+                self.wallet_manager = WalletManager()
+            if not self.token_service:
+                self.token_service = TokenService(self.web3)
+            if not self.tx_service:
+                self.tx_service = TransactionService(self.web3)
+        except Exception as e:
+            self.log(f"Ошибка инициализации сервисов: {str(e)}", "ERROR")
         
     def _send_bnb(self, to_address: str, amount: float) -> Dict[str, Any]:
         """Отправка BNB"""
-        return {'success': False, 'error': 'Not implemented'}
-        
+        try:
+            if not self.account or not self.web3:
+                return {'success': False, 'error': 'Кошелек не подключен'}
+                
+            # Конвертируем amount в Wei
+            amount_wei = self.web3.to_wei(amount, 'ether')
+            
+            # Получаем nonce
+            nonce = self.web3.eth.get_transaction_count(self.account.address)
+            
+            # Получаем цену газа
+            gas_price = self.get_gas_price_wei() if hasattr(self, 'get_gas_price_wei') else self.web3.to_wei(self.gas_price_input.value(), 'gwei')
+            
+            # Создаем транзакцию
+            transaction = {
+                'to': Web3.to_checksum_address(to_address),
+                'value': amount_wei,
+                'gas': 21000,
+                'gasPrice': gas_price,
+                'nonce': nonce,
+                'chainId': 56  # BSC Mainnet
+            }
+            
+            # Подписываем транзакцию
+            signed_txn = self.web3.eth.account.sign_transaction(transaction, self.account.key)
+            
+            # Отправляем транзакцию
+            tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            
+            # Ждем подтверждения
+            tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            
+            if tx_receipt['status'] == 1:
+                return {
+                    'success': True,
+                    'tx_hash': tx_hash.hex(),
+                    'gas_used': tx_receipt['gasUsed']
+                }
+            else:
+                return {'success': False, 'error': 'Транзакция отклонена сетью'}
+                
+        except Exception as e:
+            logger.exception(f"Ошибка отправки BNB на {to_address}")
+            return {'success': False, 'error': str(e)}
+            
     def _send_token(self, to_address: str, amount: float, token_address: str) -> Dict[str, Any]:
-        """Отправка токена"""
-        return {'success': False, 'error': 'Not implemented'}
+        """Отправка ERC20 токена"""
+        try:
+            if not self.account or not self.web3:
+                return {'success': False, 'error': 'Кошелек не подключен'}
+                
+            # Создаем контракт токена
+            contract = self.web3.eth.contract(
+                address=Web3.to_checksum_address(token_address),
+                abi=ERC20_ABI
+            )
+            
+            # Получаем decimals токена
+            decimals = contract.functions.decimals().call()
+            amount_in_units = int(amount * (10 ** decimals))
+            
+            # Получаем nonce
+            nonce = self.web3.eth.get_transaction_count(self.account.address)
+            
+            # Получаем настройки газа
+            gas_price = self.get_gas_price_wei() if hasattr(self, 'get_gas_price_wei') else self.web3.to_wei(self.gas_price_input.value(), 'gwei')
+            gas_limit = self.gas_limit_input.value()
+            
+            # Создаем транзакцию transfer
+            transaction = contract.functions.transfer(
+                Web3.to_checksum_address(to_address),
+                amount_in_units
+            ).build_transaction({
+                'from': self.account.address,
+                'gas': gas_limit,
+                'gasPrice': gas_price,
+                'nonce': nonce,
+                'chainId': 56  # BSC Mainnet
+            })
+            
+            # Подписываем транзакцию
+            signed_txn = self.web3.eth.account.sign_transaction(transaction, self.account.key)
+            
+            # Отправляем транзакцию
+            tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            
+            # Ждем подтверждения
+            tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            
+            if tx_receipt['status'] == 1:
+                return {
+                    'success': True,
+                    'tx_hash': tx_hash.hex(),
+                    'gas_used': tx_receipt['gasUsed']
+                }
+            else:
+                return {'success': False, 'error': 'Транзакция отклонена сетью'}
+                
+        except Exception as e:
+            logger.exception(f"Ошибка отправки токена на {to_address}")
+            return {'success': False, 'error': str(e)}
         
     @pyqtSlot(int, str)
     def update_address_status(self, row: int, status: str):
-        """Обновление статуса адреса"""
-        pass
+        """Обновление статуса адреса в таблице"""
+        if row < self.addresses_table.rowCount():
+            status_item = self.addresses_table.item(row, 1)
+            if status_item:
+                status_item.setText(status)
+                
+                # Цветовая индикация
+                if "Успешно" in status:
+                    status_item.setBackground(QColor(0, 100, 0))
+                elif "Ошибка" in status:
+                    status_item.setBackground(QColor(100, 0, 0))
+                elif "Отправка" in status:
+                    status_item.setBackground(QColor(100, 100, 0))
+                    
+        self.update_statistics()
         
     @pyqtSlot(dict)
     def on_transaction_completed(self, tx_info: Dict[str, Any]):
         """Обработка завершенной транзакции"""
-        pass
+        # Найдем строку с адресом
+        address = tx_info.get('address', '')
+        tx_hash = tx_info.get('tx_hash', '')
+        status = tx_info.get('status', 'error')
+        
+        for row in range(self.addresses_table.rowCount()):
+            addr_item = self.addresses_table.item(row, 0)
+            if addr_item and addr_item.text() == address:
+                if status == 'success':
+                    self.update_address_status(row, "✓ Успешно")
+                    
+                    # Добавление хэша транзакции
+                    if row < self.addresses_table.rowCount():
+                        hash_item = self.addresses_table.item(row, 2)
+                        if hash_item:
+                            hash_item.setText(tx_hash[:10] + "..." if tx_hash else "")
+                            hash_item.setToolTip(tx_hash)
+                else:
+                    error = tx_info.get('error', 'Неизвестная ошибка')
+                    self.update_address_status(row, f"✗ Ошибка")
+                break
         
     @pyqtSlot()
     def on_distribution_finished(self):
         """Обработка завершения рассылки"""
-        pass
+        self.is_distributing = False
+        self.is_paused = False
+        
+        # Обновление UI
+        self.start_btn.setEnabled(True)
+        self.pause_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
+        
+        self.update_statistics()
+        self.log(f"Массовая рассылка завершена (Слот {self.slot_number})", "SUCCESS")
+        
+        # Показ итогового сообщения
+        QMessageBox.information(
+            self,
+            "Рассылка завершена",
+            f"Массовая рассылка завершена!\n\n"
+            f"Всего адресов: {len(self.addresses)}\n"
+            f"Успешно: {self.count_status('✓ Успешно')}\n"
+            f"Ошибок: {self.count_status('✗ Ошибка')}"
+        )
+        
+    def count_status(self, status_prefix: str) -> int:
+        """Подсчет количества адресов с определенным статусом"""
+        count = 0
+        for row in range(self.addresses_table.rowCount()):
+            status = self.addresses_table.item(row, 1).text()
+            if status.startswith(status_prefix):
+                count += 1
+        return count
         
     def pause_distribution(self):
         """Приостановка рассылки"""
-        pass
+        self.is_paused = not self.is_paused
+        
+        if self.is_paused:
+            self.pause_btn.setText("Продолжить")
+            self.log("Рассылка приостановлена", "WARNING")
+        else:
+            self.pause_btn.setText("Пауза")
+            self.log("Рассылка продолжена", "SUCCESS")
         
     def stop_distribution(self):
         """Остановка рассылки"""
-        pass
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение",
+            "Вы уверены, что хотите остановить рассылку?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.stop_flag.set()
+            self.is_paused = False
+            self.log("Остановка рассылки...", "WARNING")
         
     def export_results(self):
-        """Экспорт результатов"""
-        pass
+        """Экспорт результатов рассылки"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить результаты",
+            f"mass_distribution_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "CSV Files (*.csv)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write("Address,Status,Tx Hash\n")
+                
+                for row in range(self.addresses_table.rowCount()):
+                    address = self.addresses_table.item(row, 0).text()
+                    status = self.addresses_table.item(row, 1).text()
+                    tx_hash = self.addresses_table.item(row, 2).text()
+                    
+                    f.write(f'"{address}","{status}","{tx_hash}"\n')
+                    
+            self.log(f"Результаты экспортированы: {file_path}", "SUCCESS")
+            
+        except Exception as e:
+            self.log(f"Ошибка экспорта: {e}", "ERROR")

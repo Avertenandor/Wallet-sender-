@@ -268,7 +268,7 @@ class MainWindow(QMainWindow):
         # Цветовая схема для уровней
         colors = {
             "DEBUG": "#888",
-            "INFO": "#000",
+            "INFO": "#FF9800",
             "SUCCESS": "#0a0",
             "WARNING": "#f90",
             "ERROR": "#f00"
