@@ -19,7 +19,8 @@ from .tabs import (
     AutoBuyTab,
     AutoSalesTab,
     DirectSendTab,
-    MassDistributionTab
+    MassDistributionTab,
+    SettingsTab,
 )
 
 logger = get_logger(__name__)
@@ -91,25 +92,28 @@ class MainWindow(QMainWindow):
         # Меню
         self._create_menu()
         
+        # Подключение сигналов после создания UI
+        self.connect_signals()
+        
+        logger.info("✅ Пользовательский интерфейс инициализирован")
+        
     def _create_header(self, layout):
         """Создание заголовка приложения"""
         header_widget = QWidget()
         header_layout = QVBoxLayout(header_widget)
         
-        # Заголовок
-        title_label = QLabel("🚀 WalletSender Modular v2.0 - Production Edition")
-        title_font = QFont("Arial", 16, QFont.Bold)
+        # Главный заголовок
+        title_label = QLabel("🚀 WalletSender Modular v2.0")
+        title_font = QFont("Arial", 18, QFont.Bold)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("color: #2196F3; padding: 10px;")
+        title_label.setStyleSheet("color: #4CAF50; padding: 10px;")
         header_layout.addWidget(title_label)
         
         # Подзаголовок
-        subtitle_label = QLabel("Профессиональный инструмент для работы с блокчейном BSC")
-        subtitle_font = QFont("Arial", 10)
-        subtitle_label.setFont(subtitle_font)
+        subtitle_label = QLabel("Production Edition - Профессиональное решение для BSC")
         subtitle_label.setAlignment(Qt.AlignCenter)
-        subtitle_label.setStyleSheet("color: #666; padding-bottom: 10px;")
+        subtitle_label.setStyleSheet("color: #666; font-size: 12px;")
         header_layout.addWidget(subtitle_label)
         
         layout.addWidget(header_widget)
@@ -119,39 +123,32 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         
-        # Индикатор подключения к сети
-        self.network_status = QLabel("🔴 Не подключен к BSC")
-        self.status_bar.addWidget(self.network_status)
-        
         # Прогресс бар
         self.progress_bar = QProgressBar()
-        self.progress_bar.setMaximumWidth(200)
         self.progress_bar.setVisible(False)
         self.status_bar.addPermanentWidget(self.progress_bar)
         
-        # Проверка подключения
-        self._check_network_connection()
+        # Статус подключения к сети
+        self.network_status_label = QLabel("🌐 Проверка сети...")
+        self.status_bar.addPermanentWidget(self.network_status_label)
         
-        # Таймер для периодической проверки
+        # Таймер для проверки сети
         self.network_check_timer = QTimer()
         self.network_check_timer.timeout.connect(self._check_network_connection)
-        self.network_check_timer.start(30000)  # Каждые 30 секунд
+        self.network_check_timer.start(10000)  # Каждые 10 секунд
+        
+        self.status_bar.showMessage("✅ Готов к работе")
         
     def _check_network_connection(self):
         """Проверка подключения к сети"""
         try:
-            if self.web3_provider.web3.is_connected():
-                block_number = self.web3_provider.web3.eth.block_number
-                self.network_status.setText(f"🟢 BSC подключен (блок: {block_number})")
-                self.network_status.setStyleSheet("color: green;")
+            if self.web3_provider and self.web3_provider.w3.is_connected():
+                self.network_status_label.setText("🟢 BSC подключена")
             else:
-                self.network_status.setText("🔴 Не подключен к BSC")
-                self.network_status.setStyleSheet("color: red;")
-        except Exception as e:
-            self.network_status.setText("🔴 Ошибка подключения")
-            self.network_status.setStyleSheet("color: red;")
-            logger.error(f"Ошибка проверки сети: {e}")
-            
+                self.network_status_label.setText("🔴 BSC отключена")
+        except Exception:
+            self.network_status_label.setText("🟡 BSC неизвестно")
+    
     def _load_tabs(self):
         """Загрузка вкладок приложения"""
         # Массовая рассылка (основная)
@@ -177,15 +174,22 @@ class MainWindow(QMainWindow):
         # Автопродажи
         self.auto_sales_tab = AutoSalesTab(self)
         self.tab_widget.addTab(self.auto_sales_tab, "💰 Автопродажи")
-        
+
         # Заглушки для остальных вкладок
         self._add_placeholder_tab("🔍 Анализ", "Анализ токенов и транзакций")
         self._add_placeholder_tab("🔎 Поиск", "Поиск транзакций по критериям")
         self._add_placeholder_tab("🎁 Награды", "Система наград за транзакции")
         self._add_placeholder_tab("📋 Очередь", "Управление очередью задач")
         self._add_placeholder_tab("📜 История", "История всех операций")
-        self._add_placeholder_tab("⚙️ Настройки", "Настройки приложения")
-        
+
+        # Настройки (реальная вкладка)
+        try:
+            self.settings_tab = SettingsTab(self)
+            self.tab_widget.addTab(self.settings_tab, "⚙️ Настройки")
+        except Exception:
+            # На случай ошибок в модуле настроек оставим заглушку
+            self._add_placeholder_tab("⚙️ Настройки", "Настройки приложения")
+
         logger.info(f"📋 Загружено {self.tab_widget.count()} вкладок")
         
     def _add_placeholder_tab(self, title: str, description: str):
@@ -268,7 +272,7 @@ class MainWindow(QMainWindow):
         # Цветовая схема для уровней
         colors = {
             "DEBUG": "#888",
-            "INFO": "#FF9800",
+            "INFO": "#000",
             "SUCCESS": "#0a0",
             "WARNING": "#f90",
             "ERROR": "#f00"

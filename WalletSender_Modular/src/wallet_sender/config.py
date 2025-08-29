@@ -1,326 +1,308 @@
 """
-Конфигурация приложения WalletSender
+Configuration management for WalletSender application
 """
 
-import os
 import json
-from typing import Dict, Any, List, Optional
+import os
 from pathlib import Path
+from typing import Any, Dict, Optional, List
+from copy import deepcopy
 
-from .utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-# Версия приложения
+# Project Info
 __version__ = "2.0.0"
-__author__ = "Production Team"
+__author__ = "Avertenandor"
 __description__ = "Модульная версия WalletSender для массовой рассылки токенов BSC"
 
+# Default configuration
+DEFAULT_CONFIG = {
+    "network": "bsc_mainnet",
+    "autosave": True,
+    "confirm_operations": True,
+    "sound_notifications": False,
+    "rpc_urls": {
+        "bsc_mainnet": "https://bsc-dataseed.binance.org/",
+        "bsc_testnet": "https://data-seed-prebsc-1-s1.binance.org:8545/"
+    },
+    "additional_rpcs": [],
+    "connection_timeout": 30,
+    "retry_count": 3,
+    "auto_switch_rpc": True,
+    "gas_settings": {
+        "default_gas_price": 5,
+        "default_gas_limit": 100000,
+        "max_gas_price": 50,
+        "auto_estimate": False,
+        "use_eip1559": False
+    },
+    "tokens": {
+        "PLEX_ONE": "0xdf179b6cadbc61ffd86a3d2e55f6d6e083ade6c1",
+        "USDT": "0x55d398326f99059ff775485246999027b3197955",
+        "WBNB": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+    },
+    "pancakeswap_router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+    "slippage": 2.0,
+    "bscscan_api_keys": [],
+    "api_rate_limit": 5,
+    "rotate_api_keys": True,
+    "ui": {
+        "window_width": 1400,
+        "window_height": 900,
+        "theme": "dark",
+        "language": "ru",
+        "show_tooltips": True,
+        "minimize_to_tray": False,
+        "start_minimized": False,
+        "table_row_height": 30,
+        "alternating_row_colors": True
+    },
+    "logging": {
+        "level": "INFO",
+        "file": "wallet_sender.log",
+        "max_size": 10485760,
+        "backup_count": 5,
+        "log_to_console": True,
+        "log_transactions": True,
+        "log_api_calls": False
+    },
+    "database": {
+        "url": "sqlite:///wallet_sender.db",
+        "echo": False
+    },
+    "rewards": {
+        "enabled": False,
+        "min_amount": 0.01,
+        "reward_percentage": 1.0
+    },
+    "security": {
+        "encrypt_keys": True,
+        "auto_lock": False,
+        "auto_lock_minutes": 30,
+        "clear_clipboard": True,
+        "verify_addresses": True,
+        "tx_limit_enabled": False,
+        "tx_limit_amount": 100,
+        "auto_backup": False,
+        "backup_path": "./backups"
+    },
+    "profiles": {}
+}
 
-class Config:
-    """Класс для управления конфигурацией приложения"""
+# Legacy constants for backward compatibility
+DATABASE_URL = "sqlite:///wallet_sender.db"
+BSC_MAINNET_RPC = "https://bsc-dataseed.binance.org/"
+BSC_TESTNET_RPC = "https://data-seed-prebsc-1-s1.binance.org:8545/"
+DEFAULT_GAS_PRICE_GWEI = 5
+DEFAULT_GAS_LIMIT = 100000
+BSCSCAN_API_KEYS = []
+
+
+class ConfigManager:
+    """
+    Configuration manager with JSON file persistence
+    """
     
-    # Путь к файлу конфигурации
-    CONFIG_FILE = "config.json"
-    
-    # Значения по умолчанию
-    DEFAULTS = {
-        # Сеть
-        "network": "bsc_mainnet",
-        "rpc_urls": {
-            "bsc_mainnet": "https://bsc-dataseed.binance.org/",
-            "bsc_testnet": "https://data-seed-prebsc-1-s1.binance.org:8545/"
-        },
-        
-        # Газ
-        "gas_settings": {
-            "default_gas_price": 5,  # Gwei
-            "default_gas_limit": 100000,
-            "max_gas_price": 50
-        },
-        
-        # Токены
-        "tokens": {
-            "PLEX_ONE": "0xdf179b6cadbc61ffd86a3d2e55f6d6e083ade6c1",
-            "USDT": "0x55d398326f99059ff775485246999027b3197955",
-            "WBNB": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
-        },
-        
-        # PancakeSwap
-        "pancakeswap_router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-        
-        # API ключи
-        "bscscan_api_keys": [],
-        
-        # UI настройки
-        "ui": {
-            "window_width": 1400,
-            "window_height": 900,
-            "theme": "dark",
-            "language": "ru"
-        },
-        
-        # Логирование
-        "logging": {
-            "level": "INFO",
-            "file": "wallet_sender.log",
-            "max_size": 10485760,  # 10 MB
-            "backup_count": 5
-        },
-        
-        # База данных
-        "database": {
-            "url": "sqlite:///wallet_sender.db",
-            "echo": False
-        },
-        
-        # Награды
-        "rewards": {
-            "enabled": False,
-            "min_amount": 0.01,
-            "reward_percentage": 1.0
-        },
-        
-        # Безопасность
-        "security": {
-            "encrypt_keys": True,
-            "auto_lock_minutes": 30
-        }
-    }
-    
-    def __init__(self, config_file: Optional[str] = None):
+    def __init__(self, config_file: str = "config.json"):
         """
-        Инициализация конфигурации
+        Initialize configuration manager
         
         Args:
-            config_file: Путь к файлу конфигурации
+            config_file: Path to configuration file
         """
-        self.config_file = config_file or self.CONFIG_FILE
-        self.config_path = Path(self.config_file)
-        self.config = self.DEFAULTS.copy()
-        
-        # Загрузка конфигурации из файла
+        # Get the directory where the module is located
+        module_dir = Path(__file__).parent.parent.parent  # Go up to WalletSender_Modular
+        self.config_file = module_dir / config_file
+        self.config: Dict[str, Any] = {}
+        self.defaults = deepcopy(DEFAULT_CONFIG)
         self.load()
         
-    def load(self) -> bool:
-        """
-        Загрузка конфигурации из файла
-        
-        Returns:
-            bool: Успешность загрузки
-        """
+    def load(self) -> None:
+        """Load configuration from file"""
         try:
-            if self.config_path.exists():
-                with open(self.config_path, 'r', encoding='utf-8') as f:
+            if self.config_file.exists():
+                with open(self.config_file, 'r', encoding='utf-8') as f:
                     loaded_config = json.load(f)
-                    
-                # Обновляем конфигурацию загруженными значениями
-                self._deep_update(self.config, loaded_config)
-                
-                logger.info(f"Конфигурация загружена из {self.config_file}")
-                return True
+                    # Merge with defaults to ensure all keys exist
+                    self.config = self._merge_configs(deepcopy(self.defaults), loaded_config)
             else:
-                logger.info(f"Файл конфигурации не найден, используются значения по умолчанию")
-                self.save()  # Сохраняем дефолтную конфигурацию
-                return False
-                
+                # Use defaults if file doesn't exist
+                self.config = deepcopy(self.defaults)
+                self.save()  # Create the file with defaults
         except Exception as e:
-            logger.error(f"Ошибка загрузки конфигурации: {e}")
-            return False
+            print(f"Error loading config: {e}")
+            self.config = deepcopy(self.defaults)
             
-    def save(self) -> bool:
-        """
-        Сохранение конфигурации в файл
-        
-        Returns:
-            bool: Успешность сохранения
-        """
+    def save(self) -> None:
+        """Save configuration to file"""
         try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, indent=4, ensure_ascii=False)
-                
-            logger.info(f"Конфигурация сохранена в {self.config_file}")
-            return True
+            # Ensure directory exists
+            self.config_file.parent.mkdir(parents=True, exist_ok=True)
             
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            logger.error(f"Ошибка сохранения конфигурации: {e}")
-            return False
+            print(f"Error saving config: {e}")
             
     def get(self, key: str, default: Any = None) -> Any:
         """
-        Получение значения конфигурации
+        Get configuration value by key (supports nested keys with dots)
         
         Args:
-            key: Ключ конфигурации (поддерживает точечную нотацию)
-            default: Значение по умолчанию
+            key: Configuration key (e.g., 'ui.theme' for nested)
+            default: Default value if key not found
             
         Returns:
-            Значение конфигурации
+            Configuration value
         """
-        try:
-            # Поддержка точечной нотации (например, "gas_settings.default_gas_price")
-            keys = key.split('.')
-            value = self.config
-            
-            for k in keys:
+        keys = key.split('.')
+        value = self.config
+        
+        for k in keys:
+            if isinstance(value, dict) and k in value:
                 value = value[k]
+            else:
+                return default
                 
-            return value
-            
-        except (KeyError, TypeError):
-            return default
-            
-    def set(self, key: str, value: Any) -> bool:
+        return value
+        
+    def set(self, key: str, value: Any) -> None:
         """
-        Установка значения конфигурации
+        Set configuration value by key (supports nested keys with dots)
         
         Args:
-            key: Ключ конфигурации (поддерживает точечную нотацию)
-            value: Новое значение
-            
-        Returns:
-            bool: Успешность установки
+            key: Configuration key (e.g., 'ui.theme' for nested)
+            value: Value to set
         """
-        try:
-            # Поддержка точечной нотации
-            keys = key.split('.')
-            config = self.config
+        keys = key.split('.')
+        config = self.config
+        
+        # Navigate to the parent of the target key
+        for k in keys[:-1]:
+            if k not in config:
+                config[k] = {}
+            config = config[k]
             
-            # Навигация до предпоследнего ключа
-            for k in keys[:-1]:
-                if k not in config:
-                    config[k] = {}
-                config = config[k]
-                
-            # Установка значения
-            config[keys[-1]] = value
-            
-            # Автосохранение
+        # Set the value
+        config[keys[-1]] = value
+        
+        # Auto-save if enabled
+        if self.get('autosave', True):
             self.save()
             
-            return True
-            
-        except Exception as e:
-            logger.error(f"Ошибка установки конфигурации {key}: {e}")
-            return False
-            
-    def _deep_update(self, base: Dict, update: Dict) -> Dict:
+    def reset_to_defaults(self) -> None:
+        """Reset configuration to default values"""
+        self.config = deepcopy(self.defaults)
+        self.save()
+        
+    def _merge_configs(self, base: Dict, update: Dict) -> Dict:
         """
-        Глубокое обновление словаря
+        Recursively merge two configuration dictionaries
         
         Args:
-            base: Базовый словарь
-            update: Словарь с обновлениями
+            base: Base configuration
+            update: Configuration to merge
             
         Returns:
-            Обновленный словарь
+            Merged configuration
         """
         for key, value in update.items():
-            if isinstance(value, dict) and key in base and isinstance(base[key], dict):
-                self._deep_update(base[key], value)
+            if key in base:
+                if isinstance(base[key], dict) and isinstance(value, dict):
+                    base[key] = self._merge_configs(base[key], value)
+                else:
+                    base[key] = value
             else:
                 base[key] = value
                 
         return base
         
-    def get_rpc_url(self, network: Optional[str] = None) -> str:
-        """
-        Получение RPC URL для сети
+    # Legacy properties for backward compatibility
+    @property
+    def version(self) -> str:
+        return __version__
         
-        Args:
-            network: Название сети
-            
-        Returns:
-            str: RPC URL
-        """
-        network = network or self.get("network", "bsc_mainnet")
-        return self.get(f"rpc_urls.{network}", "https://bsc-dataseed.binance.org/")
+    @property
+    def author(self) -> str:
+        return __author__
         
-    def get_token_address(self, token_name: str) -> Optional[str]:
-        """
-        Получение адреса токена
+    @property
+    def description(self) -> str:
+        return __description__
         
-        Args:
-            token_name: Название токена
-            
-        Returns:
-            str: Адрес токена или None
-        """
-        return self.get(f"tokens.{token_name}")
+    @property
+    def database_url(self) -> str:
+        return self.get('database.url', DATABASE_URL)
         
-    def get_bscscan_api_key(self) -> Optional[str]:
-        """
-        Получение API ключа BSCScan
+    @property
+    def bsc_mainnet_rpc(self) -> str:
+        return self.get('rpc_urls.bsc_mainnet', BSC_MAINNET_RPC)
         
-        Returns:
-            str: API ключ или None
-        """
-        keys = self.get("bscscan_api_keys", [])
-        return keys[0] if keys else None
+    @property
+    def bsc_testnet_rpc(self) -> str:
+        return self.get('rpc_urls.bsc_testnet', BSC_TESTNET_RPC)
         
-    def add_bscscan_api_key(self, api_key: str) -> bool:
-        """
-        Добавление API ключа BSCScan
+    @property
+    def default_gas_price_gwei(self) -> float:
+        return self.get('gas_settings.default_gas_price', DEFAULT_GAS_PRICE_GWEI)
         
-        Args:
-            api_key: API ключ
-            
-        Returns:
-            bool: Успешность добавления
-        """
-        keys = self.get("bscscan_api_keys", [])
-        if api_key not in keys:
-            keys.append(api_key)
-            return self.set("bscscan_api_keys", keys)
-        return True
+    @property
+    def default_gas_limit(self) -> int:
+        return self.get('gas_settings.default_gas_limit', DEFAULT_GAS_LIMIT)
         
-    def get_gas_settings(self) -> Dict[str, Any]:
-        """
-        Получение настроек газа
+    @property
+    def bscscan_api_keys(self) -> List[str]:
+        return self.get('bscscan_api_keys', [])
         
-        Returns:
-            Dict: Настройки газа
-        """
-        return self.get("gas_settings", self.DEFAULTS["gas_settings"])
-        
-    def get_ui_settings(self) -> Dict[str, Any]:
-        """
-        Получение настроек интерфейса
-        
-        Returns:
-            Dict: Настройки UI
-        """
-        return self.get("ui", self.DEFAULTS["ui"])
-        
-    def reset_to_defaults(self) -> bool:
-        """
-        Сброс конфигурации к значениям по умолчанию
-        
-        Returns:
-            bool: Успешность сброса
-        """
-        try:
-            self.config = self.DEFAULTS.copy()
-            return self.save()
-        except Exception as e:
-            logger.error(f"Ошибка сброса конфигурации: {e}")
-            return False
+    def get_rpc_url(self) -> str:
+        """Get current RPC URL based on selected network"""
+        network = self.get('network', 'bsc_mainnet')
+        return self.get(f'rpc_urls.{network}', BSC_MAINNET_RPC)
 
 
-# Глобальный экземпляр конфигурации
-_config_instance: Optional[Config] = None
+# Legacy Config class for backward compatibility
+class Config:
+    """Legacy configuration class for backward compatibility"""
+    
+    def __init__(self):
+        self._manager = ConfigManager()
+        
+    def __getattr__(self, name):
+        # Delegate to ConfigManager
+        return getattr(self._manager, name)
+        
+
+# Global configuration instance
+_config_instance: Optional[ConfigManager] = None
 
 
-def get_config() -> Config:
+def get_config() -> ConfigManager:
     """
-    Получение глобального экземпляра конфигурации
+    Get global configuration instance
     
     Returns:
-        Config: Экземпляр конфигурации
+        ConfigManager instance
     """
     global _config_instance
-    
     if _config_instance is None:
-        _config_instance = Config()
-        
+        _config_instance = ConfigManager()
     return _config_instance
+
+
+# Token Contracts (BSC Mainnet) - for backward compatibility
+CONTRACTS = {
+    "PLEX_ONE": "0xdf179b6cadbc61ffd86a3d2e55f6d6e083ade6c1",
+    "USDT": "0x55d398326f99059ff775485246999027b3197955",
+    "BNB": "0x0000000000000000000000000000000000000000"  # Native token
+}
+
+# PancakeSwap Router
+PANCAKESWAP_ROUTER = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+
+# UI Settings
+WINDOW_WIDTH = 1400
+WINDOW_HEIGHT = 900
+WINDOW_TITLE = "WalletSender Modular v2.0"
+
+# Logging
+LOG_LEVEL = "INFO"
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+LOG_FILE = "wallet_sender_modular.log"

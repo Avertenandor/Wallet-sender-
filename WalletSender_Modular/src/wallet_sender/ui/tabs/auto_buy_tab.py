@@ -658,7 +658,7 @@ class AutoBuyTab(BaseTab):
                 ).build_transaction({
                     'from': self.account.address,
                     'value': amount_wei,
-                    'gas': 300000,
+                    'gas': self.get_gas_limit(),  # Используем настройки из UI
                     'gasPrice': self.get_gas_price_wei(),
                     'nonce': self.web3.eth.get_transaction_count(self.account.address)
                 })
@@ -682,7 +682,7 @@ class AutoBuyTab(BaseTab):
                     amount_in_units
                 ).build_transaction({
                     'from': self.account.address,
-                    'gas': 100000,
+                    'gas': self.get_gas_limit(),  # Используем настройки из UI
                     'gasPrice': self.get_gas_price_wei(),
                     'nonce': self.web3.eth.get_transaction_count(self.account.address)
                 })
@@ -737,7 +737,7 @@ class AutoBuyTab(BaseTab):
                     deadline
                 ).build_transaction({
                     'from': self.account.address,
-                    'gas': 300000,
+                    'gas': self.get_gas_limit(),  # Используем настройки из UI
                     'gasPrice': self.get_gas_price_wei(),
                     'nonce': current_nonce  # Используем полученный актуальный nonce
                 })

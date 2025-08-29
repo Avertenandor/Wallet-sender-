@@ -1,19 +1,12 @@
-"""UI tabs package"""
+"""Tabs package public exports for UI imports.
 
-# Импорт всех вкладок
-try:
-    from .base_tab import BaseTab
-    from .auto_buy_tab import AutoBuyTab
-    from .auto_sales_tab import AutoSalesTab
-    from .direct_send_tab import DirectSendTab
-    from .mass_distribution_tab import MassDistributionTab
-except ImportError as e:
-    print(f"Warning: Не удалось импортировать некоторые вкладки: {e}")
+This avoids import errors like `from .tabs import MassDistributionTab` by
+re-exporting tab classes here.
+"""
 
-__all__ = [
-    'BaseTab',
-    'AutoBuyTab', 
-    'AutoSalesTab',
-    'DirectSendTab',
-    'MassDistributionTab'
-]
+from .mass_distribution_tab import MassDistributionTab  # noqa: F401
+from .direct_send_tab import DirectSendTab  # noqa: F401
+from .auto_buy_tab import AutoBuyTab  # noqa: F401
+from .auto_sales_tab import AutoSalesTab  # noqa: F401
+from .settings_tab import SettingsTab  # noqa: F401
+from .base_tab import BaseTab  # noqa: F401

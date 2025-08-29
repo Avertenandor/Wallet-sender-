@@ -1,5 +1,7 @@
 """
 Constants for WalletSender application.
+This module centralizes network config, common ABIs, gas presets and known contract addresses
+to avoid duplication and import errors across modules.
 """
 
 # Contract addresses (BSC)
@@ -9,6 +11,10 @@ CONTRACTS = {
     'PANCAKESWAP_ROUTER': '0x10ed43c718714eb63d5aa57b78b54704e256024e',
     'WBNB': '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'
 }
+
+# Backward-compatible single-name exports (some modules import these directly)
+PLEX_CONTRACT = CONTRACTS['PLEX_ONE']
+USDT_CONTRACT = CONTRACTS['USDT']
 
 # BSC network configuration
 BSC_MAINNET = {
@@ -23,6 +29,13 @@ DEFAULT_GAS_PRICE = 5  # Gwei
 DEFAULT_GAS_LIMIT = 21000
 DEFAULT_SLIPPAGE = 2  # %
 
+# Gas presets used by services
+GAS_LIMITS = {
+    'transfer': 21000,
+    'erc20_transfer': 100000,
+    'approve': 100000
+}
+
 # API endpoints
 BSCSCAN_API_URLS = [
     'https://api.bscscan.com/api',
@@ -33,26 +46,6 @@ BSCSCAN_API_URLS = [
 DB_PATH = 'wallet_sender.db'
 LOGS_DIR = 'logs'
 CONFIG_DIR = 'config'
-
-# Gas limits
-GAS_LIMITS = {
-    'transfer': 21000,
-    'token_transfer': 100000,
-    'approve': 50000,
-    'swap': 300000
-}
-
-# ERC20 ABI
-ERC20_ABI = [
-    {"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"},
-    {"constant": False, "inputs": [{"name": "_spender", "type": "address"}, {"name": "_value", "type": "uint256"}], "name": "approve", "outputs": [{"name": "", "type": "bool"}], "type": "function"},
-    {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "type": "function"},
-    {"constant": False, "inputs": [{"name": "_to", "type": "address"}, {"name": "_value", "type": "uint256"}], "name": "transfer", "outputs": [{"name": "", "type": "bool"}], "type": "function"}
-]
-
-# Контракты для совместимости
-PLEX_CONTRACT = CONTRACTS['PLEX_ONE']
-USDT_CONTRACT = CONTRACTS['USDT']
 
 # GUI settings
 WINDOW_SIZE = (1400, 900)
@@ -72,3 +65,15 @@ TAB_TITLES = {
     'auto_sales': '💰 Автопродажи',
     'auto_buy': '🛌 Автопокупки'
 }
+
+# Minimal ERC20 ABI used across services (read + basic write)
+ERC20_ABI = [
+    {"constant": True, "inputs": [], "name": "name", "outputs": [{"name": "", "type": "string"}], "payable": False, "stateMutability": "view", "type": "function"},
+    {"constant": False, "inputs": [{"name": "_spender", "type": "address"}, {"name": "_value", "type": "uint256"}], "name": "approve", "outputs": [{"name": "", "type": "bool"}], "payable": False, "stateMutability": "nonpayable", "type": "function"},
+    {"constant": True, "inputs": [], "name": "totalSupply", "outputs": [{"name": "", "type": "uint256"}], "payable": False, "stateMutability": "view", "type": "function"},
+    {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "payable": False, "stateMutability": "view", "type": "function"},
+    {"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "payable": False, "stateMutability": "view", "type": "function"},
+    {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "payable": False, "stateMutability": "view", "type": "function"},
+    {"constant": False, "inputs": [{"name": "_to", "type": "address"}, {"name": "_value", "type": "uint256"}], "name": "transfer", "outputs": [{"name": "", "type": "bool"}], "payable": False, "stateMutability": "nonpayable", "type": "function"},
+    {"constant": True, "inputs": [{"name": "_owner", "type": "address"}, {"name": "_spender", "type": "address"}], "name": "allowance", "outputs": [{"name": "", "type": "uint256"}], "payable": False, "stateMutability": "view", "type": "function"}
+]

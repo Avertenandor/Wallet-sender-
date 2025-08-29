@@ -3,6 +3,12 @@
 """
 
 import json
+import os
+import sys
+import time
+import platform
+import subprocess
+import requests
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
@@ -11,7 +17,8 @@ from PyQt5.QtWidgets import (
     QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QFormLayout,
     QMessageBox, QComboBox, QCheckBox, QTabWidget, QWidget,
     QListWidget, QListWidgetItem, QFileDialog, QDialog,
-    QDialogButtonBox, QGridLayout, QScrollArea
+    QDialogButtonBox, QGridLayout, QScrollArea, QApplication,
+    QProgressBar, QInputDialog
 )
 from PyQt5.QtCore import pyqtSignal, Qt, QSettings
 from PyQt5.QtGui import QFont, QIcon
@@ -33,6 +40,7 @@ class SettingsTab(BaseTab):
     
     def __init__(self, main_window, parent=None):
         self.config = get_config()
+        self.full_api_keys = []  # Храним полные API ключи
         super().__init__(main_window, parent)
         
     def init_ui(self):
@@ -250,73 +258,75 @@ class SettingsTab(BaseTab):
         """Создание вкладки настроек газа"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+
         gas_group = QGroupBox("Настройки газа")
         gas_layout = QFormLayout(gas_group)
-        
+
         gas_settings = self.config.get("gas_settings", {})
-        
+
         # Цена газа по умолчанию
         self.default_gas_price = QDoubleSpinBox()
-        self.default_gas_price.setRange(0.1, 1000)
-        self.default_gas_price.setDecimals(1)
-        self.default_gas_price.setValue(gas_settings.get("default_gas_price", DEFAULT_GAS_PRICE))
+        self.default_gas_price.setRange(0.01, 1000)
+        self.default_gas_price.setDecimals(2)
+        self.default_gas_price.setSingleStep(0.01)
+        self.default_gas_price.setValue(gas_settings.get("default_gas_price", 0.01))
         self.default_gas_price.setSuffix(" Gwei")
         gas_layout.addRow("Цена газа по умолчанию:", self.default_gas_price)
-        
+
         # Лимит газа по умолчанию
         self.default_gas_limit = QSpinBox()
         self.default_gas_limit.setRange(21000, 1000000)
         self.default_gas_limit.setValue(gas_settings.get("default_gas_limit", DEFAULT_GAS_LIMIT))
         gas_layout.addRow("Лимит газа по умолчанию:", self.default_gas_limit)
-        
+
         # Максимальная цена газа
         self.max_gas_price = QDoubleSpinBox()
-        self.max_gas_price.setRange(1, 1000)
-        self.max_gas_price.setDecimals(1)
+        self.max_gas_price.setRange(0.01, 1000)
+        self.max_gas_price.setDecimals(2)
+        self.max_gas_price.setSingleStep(0.01)
         self.max_gas_price.setValue(gas_settings.get("max_gas_price", 50))
         self.max_gas_price.setSuffix(" Gwei")
         gas_layout.addRow("Макс. цена газа:", self.max_gas_price)
-        
+
         # Автоматическая оценка газа
         self.auto_estimate_gas = QCheckBox("Автоматически оценивать газ")
         self.auto_estimate_gas.setChecked(gas_settings.get("auto_estimate", False))
         gas_layout.addRow(self.auto_estimate_gas)
-        
+
         # Использовать EIP-1559
         self.use_eip1559 = QCheckBox("Использовать EIP-1559 (если поддерживается)")
         self.use_eip1559.setChecked(gas_settings.get("use_eip1559", False))
         gas_layout.addRow(self.use_eip1559)
-        
+
         layout.addWidget(gas_group)
-        
+
         # Предустановки газа
         presets_group = QGroupBox("Предустановки")
         presets_layout = QVBoxLayout(presets_group)
-        
+
         presets_buttons_layout = QHBoxLayout()
-        
-        self.gas_slow_btn = QPushButton("🐢 Медленно (3 Gwei)")
-        self.gas_slow_btn.clicked.connect(lambda: self.set_gas_preset(3))
+
+        self.gas_slow_btn = QPushButton("🐢 Медленно (0.1 Gwei)")
+        self.gas_slow_btn.clicked.connect(lambda: self.set_gas_preset(0.1))
         presets_buttons_layout.addWidget(self.gas_slow_btn)
-        
-        self.gas_normal_btn = QPushButton("🚶 Обычно (5 Gwei)")
-        self.gas_normal_btn.clicked.connect(lambda: self.set_gas_preset(5))
+
+        self.gas_normal_btn = QPushButton("🚶 Обычно (0.2 Gwei)")
+        self.gas_normal_btn.clicked.connect(lambda: self.set_gas_preset(0.2))
         presets_buttons_layout.addWidget(self.gas_normal_btn)
-        
-        self.gas_fast_btn = QPushButton("🏃 Быстро (10 Gwei)")
-        self.gas_fast_btn.clicked.connect(lambda: self.set_gas_preset(10))
+
+        self.gas_fast_btn = QPushButton("🏃 Быстро (0.3 Gwei)")
+        self.gas_fast_btn.clicked.connect(lambda: self.set_gas_preset(0.3))
         presets_buttons_layout.addWidget(self.gas_fast_btn)
-        
-        self.gas_instant_btn = QPushButton("⚡ Мгновенно (20 Gwei)")
-        self.gas_instant_btn.clicked.connect(lambda: self.set_gas_preset(20))
+
+        self.gas_instant_btn = QPushButton("⚡ Мгновенно (0.5 Gwei)")
+        self.gas_instant_btn.clicked.connect(lambda: self.set_gas_preset(0.5))
         presets_buttons_layout.addWidget(self.gas_instant_btn)
-        
+
         presets_layout.addLayout(presets_buttons_layout)
-        
+
         layout.addWidget(presets_group)
         layout.addStretch()
-        
+
         return widget
         
     def _create_tokens_settings(self) -> QWidget:
@@ -396,8 +406,8 @@ class SettingsTab(BaseTab):
         self.api_keys_list.setMaximumHeight(150)
         
         # Загружаем API ключи
-        api_keys = self.config.get("bscscan_api_keys", [])
-        for key in api_keys:
+        self.full_api_keys = self.config.get("bscscan_api_keys", [])
+        for key in self.full_api_keys:
             # Скрываем часть ключа для безопасности
             masked_key = key[:8] + "..." + key[-8:] if len(key) > 16 else key
             self.api_keys_list.addItem(masked_key)
@@ -763,6 +773,12 @@ class SettingsTab(BaseTab):
             self.config.set("rpc_urls.bsc_mainnet", self.mainnet_rpc_input.text())
             self.config.set("rpc_urls.bsc_testnet", self.testnet_rpc_input.text())
             
+            # Сохраняем дополнительные RPC узлы
+            additional_rpcs = []
+            for i in range(self.rpc_list.count()):
+                additional_rpcs.append(self.rpc_list.item(i).text())
+            self.config.set("additional_rpcs", additional_rpcs)
+            
             # Настройки подключения
             self.config.set("connection_timeout", self.connection_timeout.value())
             self.config.set("retry_count", self.retry_count.value())
@@ -805,6 +821,15 @@ class SettingsTab(BaseTab):
             self.config.set("logging.log_to_console", self.log_to_console.isChecked())
             self.config.set("logging.log_transactions", self.log_transactions.isChecked())
             self.config.set("logging.log_api_calls", self.log_api_calls.isChecked())
+            
+            # Сохраняем токены из списка
+            tokens = {}
+            for i in range(self.tokens_list.count()):
+                item_text = self.tokens_list.item(i).text()
+                if ': ' in item_text:
+                    name, address = item_text.split(': ', 1)
+                    tokens[name] = address
+            self.config.set("tokens", tokens)
             
             # Другие настройки
             self.config.set("pancakeswap_router", self.pancake_router_input.text())
@@ -867,8 +892,86 @@ class SettingsTab(BaseTab):
             
     def test_all_rpcs(self):
         """Тестирование всех RPC узлов"""
-        # TODO: Реализовать тестирование всех RPC
-        QMessageBox.information(self, "В разработке", "Функция в разработке")
+        try:
+            from web3 import Web3
+            import time
+            
+            results_dialog = QDialog(self)
+            results_dialog.setWindowTitle("Тестирование RPC узлов")
+            results_dialog.resize(600, 400)
+            
+            layout = QVBoxLayout(results_dialog)
+            
+            # Прогресс-бар
+            progress = QProgressBar()
+            layout.addWidget(progress)
+            
+            # Результаты тестирования
+            results_text = QTextEdit()
+            results_text.setReadOnly(True)
+            layout.addWidget(results_text)
+            
+            # Собираем все RPC для тестирования
+            rpcs_to_test = [
+                ("BSC Mainnet", self.mainnet_rpc_input.text()),
+                ("BSC Testnet", self.testnet_rpc_input.text())
+            ]
+            
+            # Добавляем дополнительные RPC
+            for i in range(self.rpc_list.count()):
+                rpc_url = self.rpc_list.item(i).text()
+                rpcs_to_test.append((f"RPC #{i+1}", rpc_url))
+            
+            total = len(rpcs_to_test)
+            results = []
+            
+            for i, (name, rpc_url) in enumerate(rpcs_to_test):
+                progress.setValue(int((i / total) * 100))
+                QApplication.processEvents()
+                
+                try:
+                    start_time = time.time()
+                    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={'timeout': 5}))
+                    
+                    if w3.is_connected():
+                        block_number = w3.eth.block_number
+                        response_time = (time.time() - start_time) * 1000
+                        result = f"✅ {name}: Успешно\n   Блок: {block_number}\n   Время отклика: {response_time:.2f}ms\n\n"
+                        results.append((True, response_time))
+                    else:
+                        result = f"❌ {name}: Не удалось подключиться\n\n"
+                        results.append((False, 0))
+                except Exception as e:
+                    result = f"❌ {name}: Ошибка\n   {str(e)}\n\n"
+                    results.append((False, 0))
+                
+                results_text.append(result)
+                QApplication.processEvents()
+            
+            progress.setValue(100)
+            
+            # Итоговая статистика
+            successful = sum(1 for r in results if r[0])
+            avg_response = sum(r[1] for r in results if r[0]) / max(successful, 1)
+            
+            summary = f"\n{'='*50}\n"
+            summary += f"Итого протестировано: {total}\n"
+            summary += f"Успешных подключений: {successful}\n"
+            summary += f"Неудачных подключений: {total - successful}\n"
+            if successful > 0:
+                summary += f"Средний отклик: {avg_response:.2f}ms\n"
+            
+            results_text.append(summary)
+            
+            # Кнопка закрытия
+            close_btn = QPushButton("Закрыть")
+            close_btn.clicked.connect(results_dialog.close)
+            layout.addWidget(close_btn)
+            
+            results_dialog.exec_()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка тестирования RPC: {str(e)}")
         
     def add_rpc(self):
         """Добавление нового RPC узла"""
@@ -880,11 +983,25 @@ class SettingsTab(BaseTab):
         if ok and text:
             self.rpc_list.addItem(text)
             
+            # Сохраняем в конфигурацию
+            additional_rpcs = []
+            for i in range(self.rpc_list.count()):
+                additional_rpcs.append(self.rpc_list.item(i).text())
+            self.config.set("additional_rpcs", additional_rpcs)
+            self.log(f"Добавлен RPC узел: {text}", "INFO")
+            
     def remove_rpc(self):
         """Удаление выбранного RPC узла"""
         current_item = self.rpc_list.currentItem()
         if current_item:
             self.rpc_list.takeItem(self.rpc_list.row(current_item))
+            
+            # Сохраняем в конфигурацию
+            additional_rpcs = []
+            for i in range(self.rpc_list.count()):
+                additional_rpcs.append(self.rpc_list.item(i).text())
+            self.config.set("additional_rpcs", additional_rpcs)
+            self.log("Удален RPC узел", "INFO")
             
     def add_token(self):
         """Добавление нового токена"""
@@ -907,15 +1024,78 @@ class SettingsTab(BaseTab):
         layout.addWidget(buttons)
         
         if dialog.exec_() == QDialog.Accepted:
-            name = name_input.text()
-            address = address_input.text()
+            name = name_input.text().strip()
+            address = address_input.text().strip()
             if name and address:
+                # Проверяем валидность адреса
+                if not address.startswith('0x') or len(address) != 42:
+                    QMessageBox.warning(self, "Ошибка", "Неверный формат адреса токена")
+                    return
+                
                 self.tokens_list.addItem(f"{name}: {address}")
+                
+                # Обновляем конфигурацию
+                tokens = self.config.get("tokens", {})
+                tokens[name] = address
+                self.config.set("tokens", tokens)
+                self.log(f"Добавлен токен: {name} -> {address}", "SUCCESS")
                 
     def edit_token(self):
         """Редактирование выбранного токена"""
-        # TODO: Реализовать редактирование токена
-        QMessageBox.information(self, "В разработке", "Функция в разработке")
+        current_item = self.tokens_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Предупреждение", "Выберите токен для редактирования")
+            return
+        
+        # Парсим текущие данные
+        text = current_item.text()
+        if ': ' in text:
+            name, address = text.split(': ', 1)
+        else:
+            name = text
+            address = ""
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Редактировать токен")
+        layout = QFormLayout(dialog)
+        
+        name_input = QLineEdit(name)
+        address_input = QLineEdit(address)
+        
+        layout.addRow("Название:", name_input)
+        layout.addRow("Адрес:", address_input)
+        
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
+            parent=dialog
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            new_name = name_input.text().strip()
+            new_address = address_input.text().strip()
+            
+            if new_name and new_address:
+                # Проверяем валидность адреса
+                if not new_address.startswith('0x') or len(new_address) != 42:
+                    QMessageBox.warning(self, "Ошибка", "Неверный формат адреса токена")
+                    return
+                
+                # Обновляем в списке
+                current_item.setText(f"{new_name}: {new_address}")
+                
+                # Обновляем конфигурацию
+                tokens = {}
+                for i in range(self.tokens_list.count()):
+                    item_text = self.tokens_list.item(i).text()
+                    if ': ' in item_text:
+                        token_name, token_address = item_text.split(': ', 1)
+                        tokens[token_name] = token_address
+                self.config.set("tokens", tokens)
+                
+                self.log(f"Токен изменен: {new_name} -> {new_address}", "INFO")
         
     def remove_token(self):
         """Удаление выбранного токена"""
@@ -923,32 +1103,106 @@ class SettingsTab(BaseTab):
         if current_item:
             self.tokens_list.takeItem(self.tokens_list.row(current_item))
             
+            # Обновляем конфигурацию
+            tokens = {}
+            for i in range(self.tokens_list.count()):
+                item_text = self.tokens_list.item(i).text()
+                if ': ' in item_text:
+                    name, address = item_text.split(': ', 1)
+                    tokens[name] = address
+            self.config.set("tokens", tokens)
+            self.log("Токен удален", "INFO")
+            
     def add_api_key(self):
         """Добавление нового API ключа"""
-        from PyQt5.QtWidgets import QInputDialog
         text, ok = QInputDialog.getText(
             self, 
             "Добавить API ключ", 
             "Введите BSCScan API ключ:"
         )
         if ok and text:
+            # Сохраняем полный ключ
+            self.full_api_keys.append(text)
+            
+            # Показываем маскированный ключ
             masked_key = text[:8] + "..." + text[-8:] if len(text) > 16 else text
             self.api_keys_list.addItem(masked_key)
-            # Сохраняем полный ключ в конфиг
-            api_keys = self.config.get("bscscan_api_keys", [])
-            api_keys.append(text)
-            self.config.set("bscscan_api_keys", api_keys)
+            
+            # Сохраняем в конфиг
+            self.config.set("bscscan_api_keys", self.full_api_keys)
+            self.log(f"Добавлен API ключ", "SUCCESS")
             
     def remove_api_key(self):
         """Удаление выбранного API ключа"""
         current_item = self.api_keys_list.currentItem()
         if current_item:
-            self.api_keys_list.takeItem(self.api_keys_list.row(current_item))
+            row = self.api_keys_list.row(current_item)
+            self.api_keys_list.takeItem(row)
+            
+            # Удаляем из полного списка
+            if row < len(self.full_api_keys):
+                del self.full_api_keys[row]
+                self.config.set("bscscan_api_keys", self.full_api_keys)
+                self.log("Удален API ключ", "INFO")
             
     def test_api_key(self):
         """Тестирование выбранного API ключа"""
-        # TODO: Реализовать тестирование API ключа
-        QMessageBox.information(self, "В разработке", "Функция в разработке")
+        current_item = self.api_keys_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Предупреждение", "Выберите API ключ для тестирования")
+            return
+        
+        # Получаем индекс ключа
+        row = self.api_keys_list.row(current_item)
+        
+        if row >= len(self.full_api_keys):
+            QMessageBox.warning(self, "Ошибка", "API ключ не найден")
+            return
+        
+        api_key = self.full_api_keys[row]
+        
+        try:
+            # Тестовый запрос к BSCScan API
+            test_url = "https://api.bscscan.com/api"
+            params = {
+                'module': 'stats',
+                'action': 'bnbprice',
+                'apikey': api_key
+            }
+            
+            response = requests.get(test_url, params=params, timeout=10)
+            data = response.json()
+            
+            if data.get('status') == '1':
+                bnb_price = data.get('result', {}).get('ethusd', 'N/A')
+                QMessageBox.information(
+                    self, 
+                    "Успех", 
+                    f"✅ API ключ работает!\n\nТекущая цена BNB: ${bnb_price}"
+                )
+                self.log(f"API ключ протестирован успешно", "SUCCESS")
+            else:
+                error_msg = data.get('message', 'Неизвестная ошибка')
+                result_msg = data.get('result', '')
+                QMessageBox.warning(
+                    self, 
+                    "Ошибка API", 
+                    f"❌ API ключ не работает!\n\nОшибка: {error_msg}\n{result_msg}"
+                )
+                self.log(f"API ключ не прошел тестирование: {error_msg}", "ERROR")
+                
+        except requests.RequestException as e:
+            QMessageBox.critical(
+                self, 
+                "Ошибка сети", 
+                f"Не удалось проверить API ключ:\n{str(e)}"
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, 
+                "Ошибка", 
+                f"Ошибка при тестировании API ключа:\n{str(e)}"
+            )
         
     def set_gas_preset(self, gwei: float):
         """Установка предустановленного значения газа"""
@@ -975,8 +1229,13 @@ class SettingsTab(BaseTab):
         """Открытие файла логов"""
         log_file = self.log_file_input.text()
         if Path(log_file).exists():
-            import os
-            os.startfile(log_file)
+            # Кроссплатформенное открытие файла
+            if platform.system() == 'Windows':
+                os.startfile(log_file)
+            elif platform.system() == 'Darwin':  # macOS
+                subprocess.call(['open', log_file])
+            else:  # Linux
+                subprocess.call(['xdg-open', log_file])
         else:
             QMessageBox.warning(self, "Ошибка", "Файл логов не найден")
             
@@ -1016,8 +1275,111 @@ class SettingsTab(BaseTab):
                 
     def export_selected_settings(self):
         """Экспорт выбранных настроек"""
-        # TODO: Реализовать выбор настроек для экспорта
-        QMessageBox.information(self, "В разработке", "Функция в разработке")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Выберите настройки для экспорта")
+        dialog.resize(400, 500)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Чекбоксы для выбора категорий
+        checkboxes = {}
+        categories = [
+            ('general', 'Основные настройки'),
+            ('network', 'Настройки сети'),
+            ('gas', 'Настройки газа'),
+            ('tokens', 'Токены'),
+            ('api', 'API ключи'),
+            ('ui', 'Интерфейс'),
+            ('security', 'Безопасность'),
+            ('logging', 'Логирование'),
+            ('rewards', 'Награды')
+        ]
+        
+        layout.addWidget(QLabel("Выберите категории для экспорта:"))
+        
+        for key, label in categories:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(True)  # По умолчанию всё выбрано
+            checkboxes[key] = checkbox
+            layout.addWidget(checkbox)
+        
+        # Кнопки
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
+            parent=dialog
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            # Формируем конфигурацию для экспорта
+            export_config = {}
+            
+            if checkboxes['general'].isChecked():
+                export_config['network'] = self.config.get('network')
+                export_config['autosave'] = self.config.get('autosave')
+                export_config['confirm_operations'] = self.config.get('confirm_operations')
+                export_config['sound_notifications'] = self.config.get('sound_notifications')
+            
+            if checkboxes['network'].isChecked():
+                export_config['rpc_urls'] = self.config.get('rpc_urls')
+                export_config['additional_rpcs'] = self.config.get('additional_rpcs')
+                export_config['connection_timeout'] = self.config.get('connection_timeout')
+                export_config['retry_count'] = self.config.get('retry_count')
+                export_config['auto_switch_rpc'] = self.config.get('auto_switch_rpc')
+            
+            if checkboxes['gas'].isChecked():
+                export_config['gas_settings'] = self.config.get('gas_settings')
+            
+            if checkboxes['tokens'].isChecked():
+                export_config['tokens'] = self.config.get('tokens')
+                export_config['pancakeswap_router'] = self.config.get('pancakeswap_router')
+                export_config['slippage'] = self.config.get('slippage')
+            
+            if checkboxes['api'].isChecked():
+                # Для безопасности НЕ экспортируем сами ключи, только настройки
+                export_config['api_rate_limit'] = self.config.get('api_rate_limit')
+                export_config['rotate_api_keys'] = self.config.get('rotate_api_keys')
+                # Добавляем информацию о количестве ключей
+                export_config['api_keys_count'] = len(self.config.get('bscscan_api_keys', []))
+            
+            if checkboxes['ui'].isChecked():
+                export_config['ui'] = self.config.get('ui')
+            
+            if checkboxes['security'].isChecked():
+                export_config['security'] = self.config.get('security')
+            
+            if checkboxes['logging'].isChecked():
+                export_config['logging'] = self.config.get('logging')
+            
+            if checkboxes['rewards'].isChecked():
+                export_config['rewards'] = self.config.get('rewards')
+            
+            # Сохраняем в файл
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Экспорт настроек",
+                "wallet_sender_settings_selected.json",
+                "JSON Files (*.json)"
+            )
+            
+            if path:
+                try:
+                    with open(path, 'w', encoding='utf-8') as f:
+                        json.dump(export_config, f, indent=4, ensure_ascii=False)
+                    QMessageBox.information(
+                        self, 
+                        "Успех", 
+                        f"Выбранные настройки экспортированы в:\n{path}"
+                    )
+                    self.log(f"Настройки экспортированы: {path}", "SUCCESS")
+                except Exception as e:
+                    QMessageBox.critical(
+                        self, 
+                        "Ошибка", 
+                        f"Ошибка экспорта:\n{str(e)}"
+                    )
         
     def import_settings(self):
         """Импорт настроек"""
@@ -1040,8 +1402,129 @@ class SettingsTab(BaseTab):
                 
     def import_merge_settings(self):
         """Импорт настроек с объединением"""
-        # TODO: Реализовать объединение настроек
-        QMessageBox.information(self, "В разработке", "Функция в разработке")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импорт настроек для объединения",
+            "",
+            "JSON Files (*.json)"
+        )
+        
+        if not path:
+            return
+        
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                imported_config = json.load(f)
+            
+            # Показываем диалог предпросмотра изменений
+            preview_dialog = QDialog(self)
+            preview_dialog.setWindowTitle("Предпросмотр объединения настроек")
+            preview_dialog.resize(600, 400)
+            
+            layout = QVBoxLayout(preview_dialog)
+            
+            layout.addWidget(QLabel("Следующие настройки будут изменены:"))
+            
+            # Текстовое поле для отображения изменений
+            preview_text = QTextEdit()
+            preview_text.setReadOnly(True)
+            
+            changes = []
+            
+            # Сравниваем и находим изменения
+            def compare_configs(imported, current, prefix=''):
+                for key, value in imported.items():
+                    full_key = f"{prefix}.{key}" if prefix else key
+                    
+                    if key not in current:
+                        changes.append(f"➕ Новое: {full_key} = {value}")
+                    elif isinstance(value, dict) and isinstance(current.get(key), dict):
+                        compare_configs(value, current[key], full_key)
+                    elif value != current.get(key):
+                        changes.append(f"✏️ Изменено: {full_key}")
+                        changes.append(f"   Было: {current.get(key)}")
+                        changes.append(f"   Станет: {value}")
+            
+            compare_configs(imported_config, self.config.config)
+            
+            if not changes:
+                preview_text.setPlainText("Нет изменений для импорта")
+            else:
+                preview_text.setPlainText("\n".join(changes))
+            
+            layout.addWidget(preview_text)
+            
+            # Опции объединения
+            options_group = QGroupBox("Опции объединения")
+            options_layout = QVBoxLayout(options_group)
+            
+            overwrite_checkbox = QCheckBox("Перезаписать существующие настройки")
+            overwrite_checkbox.setChecked(True)
+            options_layout.addWidget(overwrite_checkbox)
+            
+            add_new_checkbox = QCheckBox("Добавить новые настройки")
+            add_new_checkbox.setChecked(True)
+            options_layout.addWidget(add_new_checkbox)
+            
+            preserve_api_checkbox = QCheckBox("Сохранить API ключи")
+            preserve_api_checkbox.setChecked(True)
+            options_layout.addWidget(preserve_api_checkbox)
+            
+            layout.addWidget(options_group)
+            
+            # Кнопки
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
+                parent=preview_dialog
+            )
+            buttons.accepted.connect(preview_dialog.accept)
+            buttons.rejected.connect(preview_dialog.reject)
+            layout.addWidget(buttons)
+            
+            if preview_dialog.exec_() == QDialog.Accepted:
+                # Выполняем объединение
+                def merge_configs(imported, current):
+                    for key, value in imported.items():
+                        # Пропускаем API ключи если выбрано сохранение
+                        if preserve_api_checkbox.isChecked() and key == 'bscscan_api_keys':
+                            continue
+                        
+                        if key not in current:
+                            # Добавляем новые настройки
+                            if add_new_checkbox.isChecked():
+                                current[key] = value
+                        elif isinstance(value, dict) and isinstance(current[key], dict):
+                            # Рекурсивное объединение словарей
+                            merge_configs(value, current[key])
+                        elif overwrite_checkbox.isChecked():
+                            # Перезаписываем существующие
+                            current[key] = value
+                
+                merge_configs(imported_config, self.config.config)
+                
+                # Сохраняем и перезагружаем
+                self.config.save()
+                self.reload_settings()
+                
+                QMessageBox.information(
+                    self, 
+                    "Успех", 
+                    "Настройки успешно объединены и применены!"
+                )
+                self.log("Настройки объединены и загружены", "SUCCESS")
+                
+        except json.JSONDecodeError as e:
+            QMessageBox.critical(
+                self, 
+                "Ошибка", 
+                f"Неверный формат JSON файла:\n{str(e)}"
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, 
+                "Ошибка", 
+                f"Ошибка импорта:\n{str(e)}"
+            )
         
     def save_profile(self):
         """Сохранение профиля настроек"""

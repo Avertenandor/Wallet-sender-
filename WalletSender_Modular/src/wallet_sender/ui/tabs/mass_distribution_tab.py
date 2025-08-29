@@ -151,24 +151,6 @@ class MassDistributionTab(BaseTab):
         
         settings_layout.addLayout(amount_layout)
         
-        # Настройки газа
-        gas_layout = QHBoxLayout()
-        gas_layout.addWidget(QLabel("Цена газа (Gwei):"))
-        
-        self.gas_price_input = QSpinBox()
-        self.gas_price_input.setRange(1, 1000)
-        self.gas_price_input.setValue(5)
-        gas_layout.addWidget(self.gas_price_input)
-        
-        gas_layout.addWidget(QLabel("Лимит газа:"))
-        
-        self.gas_limit_input = QSpinBox()
-        self.gas_limit_input.setRange(21000, 1000000)
-        self.gas_limit_input.setValue(100000)
-        gas_layout.addWidget(self.gas_limit_input)
-        
-        settings_layout.addLayout(gas_layout)
-        
         # Количество циклов
         cycles_layout = QHBoxLayout()
         cycles_layout.addWidget(QLabel("Количество циклов:"))
@@ -837,8 +819,8 @@ class MassDistributionTab(BaseTab):
             # Получаем nonce
             nonce = self.web3.eth.get_transaction_count(self.account.address)
             
-            # Получаем цену газа
-            gas_price = self.get_gas_price_wei() if hasattr(self, 'get_gas_price_wei') else self.web3.to_wei(self.gas_price_input.value(), 'gwei')
+            # Получаем цену газа из UI
+            gas_price = self.get_gas_price_wei()  # Используем метод из базового класса
             
             # Создаем транзакцию
             transaction = {
@@ -891,9 +873,9 @@ class MassDistributionTab(BaseTab):
             # Получаем nonce
             nonce = self.web3.eth.get_transaction_count(self.account.address)
             
-            # Получаем настройки газа
-            gas_price = self.get_gas_price_wei() if hasattr(self, 'get_gas_price_wei') else self.web3.to_wei(self.gas_price_input.value(), 'gwei')
-            gas_limit = self.gas_limit_input.value()
+            # Получаем настройки газа из UI
+            gas_price = self.get_gas_price_wei()  # Используем метод из базового класса
+            gas_limit = self.get_gas_limit()  # Используем метод из базового класса
             
             # Создаем транзакцию transfer
             transaction = contract.functions.transfer(
