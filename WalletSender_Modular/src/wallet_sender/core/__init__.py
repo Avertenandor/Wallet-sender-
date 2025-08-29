@@ -1,8 +1,11 @@
-"""Core functionality package"""
+"""
+Core модуль с основной функциональностью
+"""
 
-try:
-    from .web3_provider import Web3Provider
-except ImportError as e:
-    print(f"Warning: Не удалось импортировать Web3Provider: {e}")
+from .web3_provider import Web3Provider
+from .wallet_manager import WalletManager
 
-__all__ = ['Web3Provider']
+__all__ = [
+    'Web3Provider',
+    'WalletManager'
+]

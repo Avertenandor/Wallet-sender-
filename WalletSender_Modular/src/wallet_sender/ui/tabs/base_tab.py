@@ -22,18 +22,18 @@ class BaseTab(QWidget):
     progress_updated = pyqtSignal(int)  # Обновление прогресса
     operation_finished = pyqtSignal(str)  # Завершение операции
     
-    def __init__(self, main_window=None):
-        super().__init__()
+    def __init__(self, main_window=None, parent=None):
+        super().__init__(parent)
         self.main_window = main_window
         self.shared_db = getattr(main_window, 'shared_db', None) if main_window else None
         self.shared_bsc_api = getattr(main_window, 'shared_bsc_api', None) if main_window else None
         
         # Инициализация UI должна быть в дочерних классах
-        self.setup_ui()
+        self.init_ui()
         self.setup_connections()
     
-    def setup_ui(self):
-        """Настройка пользовательского интерфейса"""
+    def init_ui(self):
+        """Инициализация пользовательского интерфейса"""
         # Должно быть переопределено в дочерних классах
         pass
     
@@ -77,19 +77,26 @@ class BaseTab(QWidget):
         except:
             return 0.1
     
-    def log_message(self, message: str, level: str = "info"):
+    def log(self, message: str, level: str = "INFO"):
         """Логирование с предотвращением дублирования"""
         if hasattr(self, '_last_log_message') and self._last_log_message == message:
             return
         
         self._last_log_message = message
         
-        if level == "info":
+        # Отправка в главное окно если доступно
+        if self.main_window and hasattr(self.main_window, 'add_log'):
+            self.main_window.add_log(message, level)
+        
+        # Локальное логирование
+        if level.upper() == "INFO":
             logger.info(f"[{self.__class__.__name__}] {message}")
-        elif level == "warning":
+        elif level.upper() == "WARNING":
             logger.warning(f"[{self.__class__.__name__}] {message}")
-        elif level == "error":
+        elif level.upper() == "ERROR":
             logger.error(f"[{self.__class__.__name__}] {message}")
+        elif level.upper() == "SUCCESS":
+            logger.info(f"[{self.__class__.__name__}] ✅ {message}")
     
     def show_success(self, title: str, message: str):
         """Показывает сообщение об успехе"""
