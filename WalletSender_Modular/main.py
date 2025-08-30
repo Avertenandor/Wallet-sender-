@@ -17,6 +17,9 @@ if str(src_path) not in sys.path:
 
 # Импорты модулей
 try:
+    # Сначала импортируем qt_compat для настройки High DPI
+    from wallet_sender.qt_compat import enable_high_dpi, QT_BACKEND
+    
     from PyQt5.QtWidgets import QApplication, QMessageBox
     from PyQt5.QtCore import Qt
     import qdarkstyle
@@ -36,13 +39,11 @@ def main():
     # Настройка логгера
     logger = setup_logger("WalletSender_Modular", "wallet_sender_modular.log")
     logger.info(f"🚀 Запуск WalletSender Modular v{__version__}")
+    logger.info(f"Qt бэкенд: {QT_BACKEND}")
     
     try:
-        # Атрибуты HighDPI должны быть установлены до создания QApplication
-        if hasattr(Qt, 'AA_EnableHighDpiScaling'):
-            QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-        if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
-            QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+        # Включаем поддержку High DPI через qt_compat
+        enable_high_dpi()
         # Создание приложения Qt
         app = QApplication(sys.argv)
         
