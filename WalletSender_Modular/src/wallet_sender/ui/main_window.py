@@ -11,6 +11,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QIcon, QFont
 
 from ..utils.logger import get_logger
+from .. import __version__
 from ..config import Config
 from ..core.web3_provider import Web3Provider
 
@@ -19,7 +20,17 @@ from .tabs import (
     AutoBuyTab,
     AutoSalesTab,
     DirectSendTab,
+<<<<<<< HEAD
     MassDistributionTab
+=======
+    MassDistributionTab,
+    AnalysisTab,
+    SearchTab,
+    RewardsTab,
+    QueueTab,
+    HistoryTab,
+    SettingsTab
+>>>>>>> c1c7980 (chore(release): bump version to 2.1.0 and show version in UI/About/logs)
 )
 
 logger = get_logger(__name__)
@@ -46,12 +57,12 @@ class MainWindow(QMainWindow):
         # Подключение сигналов
         self.connect_signals()
         
-        logger.info("🚀 WalletSender Modular v2.0 запущен")
+    logger.info(f"🚀 WalletSender Modular v{__version__} запущен")
         
     def init_ui(self):
         """Инициализация пользовательского интерфейса"""
-        # Настройка окна
-        self.setWindowTitle("WalletSender Modular v2.0 - Production")
+    # Настройка окна
+    self.setWindowTitle(f"WalletSender Modular v{__version__} - Production")
         self.setGeometry(100, 100, 1400, 900)
         
         # Центральный виджет
@@ -101,8 +112,8 @@ class MainWindow(QMainWindow):
         header_widget = QWidget()
         header_layout = QVBoxLayout(header_widget)
         
-        # Главный заголовок
-        title_label = QLabel("🚀 WalletSender Modular v2.0")
+    # Главный заголовок
+    title_label = QLabel(f"🚀 WalletSender Modular v{__version__}")
         title_font = QFont("Arial", 18, QFont.Bold)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
@@ -174,6 +185,7 @@ class MainWindow(QMainWindow):
         self.auto_sales_tab = AutoSalesTab(self)
         self.tab_widget.addTab(self.auto_sales_tab, "💰 Автопродажи")
         
+<<<<<<< HEAD
         # Заглушки для остальных вкладок
         self._add_placeholder_tab("🔍 Анализ", "Анализ токенов и транзакций")
         self._add_placeholder_tab("🔎 Поиск", "Поиск транзакций по критериям")
@@ -181,6 +193,31 @@ class MainWindow(QMainWindow):
         self._add_placeholder_tab("📋 Очередь", "Управление очередью задач")
         self._add_placeholder_tab("📜 История", "История всех операций")
         self._add_placeholder_tab("⚙️ Настройки", "Настройки приложения")
+=======
+        # Анализ
+        self.analysis_tab = AnalysisTab(self)
+        self.tab_widget.addTab(self.analysis_tab, "🔍 Анализ")
+        
+        # Поиск
+        self.search_tab = SearchTab(self)
+        self.tab_widget.addTab(self.search_tab, "🔎 Поиск")
+        
+        # Награды
+        self.rewards_tab = RewardsTab(self)
+        self.tab_widget.addTab(self.rewards_tab, "🎁 Награды")
+        
+        # Очередь
+        self.queue_tab = QueueTab(self)
+        self.tab_widget.addTab(self.queue_tab, "📋 Очередь")
+        
+        # История
+        self.history_tab = HistoryTab(self)
+        self.tab_widget.addTab(self.history_tab, "📜 История")
+        
+        # Настройки
+        self.settings_tab = SettingsTab(self)
+        self.tab_widget.addTab(self.settings_tab, "⚙️ Настройки")
+>>>>>>> c1c7980 (chore(release): bump version to 2.1.0 and show version in UI/About/logs)
         
         logger.info(f"📋 Загружено {self.tab_widget.count()} вкладок")
         
@@ -306,8 +343,8 @@ class MainWindow(QMainWindow):
         
     def show_about(self):
         """Показать информацию о программе"""
-        about_text = """
-        <h2>WalletSender Modular v2.0</h2>
+    about_text = f"""
+    <h2>WalletSender Modular v{__version__}</h2>
         <p><b>Production Edition</b></p>
         <p>Профессиональный инструмент для работы с блокчейном BSC</p>
         <br>
@@ -322,8 +359,8 @@ class MainWindow(QMainWindow):
         </ul>
         <br>
         <p><b>Разработка:</b> 2025</p>
-        <p><b>Версия:</b> 2.0.0 Production</p>
-        """
+    <p><b>Версия:</b> {__version__} Production</p>
+    """
         
         QMessageBox.about(self, "О программе", about_text)
         

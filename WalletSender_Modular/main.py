@@ -22,6 +22,7 @@ try:
     import qdarkstyle
     
     from wallet_sender.ui.main_window import MainWindow
+    from wallet_sender import __version__
     from wallet_sender.utils.logger import setup_logger
     
 except ImportError as e:
@@ -34,7 +35,7 @@ def main():
     """Главная функция приложения"""
     # Настройка логгера
     logger = setup_logger("WalletSender_Modular", "wallet_sender_modular.log")
-    logger.info("🚀 Запуск WalletSender Modular v2.0")
+    logger.info(f"🚀 Запуск WalletSender Modular v{__version__}")
     
     try:
         # Атрибуты HighDPI должны быть установлены до создания QApplication

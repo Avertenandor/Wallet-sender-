@@ -111,6 +111,20 @@ class BaseTab(QWidget):
 		# Placeholder periodic updater
 		pass
 
+	# ----- Gas settings helpers -----
+	def get_gas_price_wei(self) -> int:
+		"""Get gas price in Wei from UI settings"""
+		if hasattr(self, 'gas_price_input'):
+			gas_price_gwei = self.gas_price_input.value()
+			return int(gas_price_gwei * 10**9)  # Convert Gwei to Wei
+		return int(5 * 10**9)  # Default 5 Gwei
+	
+	def get_gas_limit(self) -> int:
+		"""Get gas limit from UI settings"""
+		if hasattr(self, 'gas_limit_input'):
+			return self.gas_limit_input.value()
+		return 100000  # Default gas limit
+	
 	# ----- Logging helper -----
 	def log(self, message: str, level: str = "INFO"):
 		try:

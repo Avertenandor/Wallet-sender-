@@ -1,0 +1,27 @@
+{
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": "none",
+  "reportMissingImports": "none",
+  "stubPath": "./typings",
+  "pythonVersion": "3.11",
+  "include": [
+    "src/**/*.py",
+    "main.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/node_modules",
+    "**/.git",
+    "venv",
+    ".venv"
+  ],
+  "extraPaths": [
+    "./src"
+  ],
+  "reportUnknownMemberType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportGeneralTypeIssues": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportAttributeAccessIssue": "none"
+}

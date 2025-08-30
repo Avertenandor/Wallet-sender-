@@ -42,6 +42,14 @@ BSCSCAN_API_URLS = [
     'https://api.bscscan.com/api'
 ]
 
+# Legacy aliases for backward compatibility
+BSCSCAN_URL = 'https://api.etherscan.io/v2/api'  # Now using Etherscan V2 API
+BSCSCAN_KEYS = [
+    'RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH',
+    'U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ', 
+    'RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1'
+]
+
 # File paths
 DB_PATH = 'wallet_sender.db'
 LOGS_DIR = 'logs'
