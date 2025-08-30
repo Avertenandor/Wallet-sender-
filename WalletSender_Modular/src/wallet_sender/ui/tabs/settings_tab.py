@@ -258,75 +258,73 @@ class SettingsTab(BaseTab):
         """Создание вкладки настроек газа"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-
+        
         gas_group = QGroupBox("Настройки газа")
         gas_layout = QFormLayout(gas_group)
-
+        
         gas_settings = self.config.get("gas_settings", {})
-
+        
         # Цена газа по умолчанию
         self.default_gas_price = QDoubleSpinBox()
-        self.default_gas_price.setRange(0.01, 1000)
-        self.default_gas_price.setDecimals(2)
-        self.default_gas_price.setSingleStep(0.01)
-        self.default_gas_price.setValue(gas_settings.get("default_gas_price", 0.01))
+        self.default_gas_price.setRange(0.1, 1000)
+        self.default_gas_price.setDecimals(1)
+        self.default_gas_price.setValue(gas_settings.get("default_gas_price", DEFAULT_GAS_PRICE))
         self.default_gas_price.setSuffix(" Gwei")
         gas_layout.addRow("Цена газа по умолчанию:", self.default_gas_price)
-
+        
         # Лимит газа по умолчанию
         self.default_gas_limit = QSpinBox()
         self.default_gas_limit.setRange(21000, 1000000)
         self.default_gas_limit.setValue(gas_settings.get("default_gas_limit", DEFAULT_GAS_LIMIT))
         gas_layout.addRow("Лимит газа по умолчанию:", self.default_gas_limit)
-
+        
         # Максимальная цена газа
         self.max_gas_price = QDoubleSpinBox()
-        self.max_gas_price.setRange(0.01, 1000)
-        self.max_gas_price.setDecimals(2)
-        self.max_gas_price.setSingleStep(0.01)
+        self.max_gas_price.setRange(1, 1000)
+        self.max_gas_price.setDecimals(1)
         self.max_gas_price.setValue(gas_settings.get("max_gas_price", 50))
         self.max_gas_price.setSuffix(" Gwei")
         gas_layout.addRow("Макс. цена газа:", self.max_gas_price)
-
+        
         # Автоматическая оценка газа
         self.auto_estimate_gas = QCheckBox("Автоматически оценивать газ")
         self.auto_estimate_gas.setChecked(gas_settings.get("auto_estimate", False))
         gas_layout.addRow(self.auto_estimate_gas)
-
+        
         # Использовать EIP-1559
         self.use_eip1559 = QCheckBox("Использовать EIP-1559 (если поддерживается)")
         self.use_eip1559.setChecked(gas_settings.get("use_eip1559", False))
         gas_layout.addRow(self.use_eip1559)
-
+        
         layout.addWidget(gas_group)
-
+        
         # Предустановки газа
         presets_group = QGroupBox("Предустановки")
         presets_layout = QVBoxLayout(presets_group)
-
+        
         presets_buttons_layout = QHBoxLayout()
-
-        self.gas_slow_btn = QPushButton("🐢 Медленно (0.1 Gwei)")
-        self.gas_slow_btn.clicked.connect(lambda: self.set_gas_preset(0.1))
+        
+        self.gas_slow_btn = QPushButton("🐢 Медленно (3 Gwei)")
+        self.gas_slow_btn.clicked.connect(lambda: self.set_gas_preset(3))
         presets_buttons_layout.addWidget(self.gas_slow_btn)
-
-        self.gas_normal_btn = QPushButton("🚶 Обычно (0.2 Gwei)")
-        self.gas_normal_btn.clicked.connect(lambda: self.set_gas_preset(0.2))
+        
+        self.gas_normal_btn = QPushButton("🚶 Обычно (5 Gwei)")
+        self.gas_normal_btn.clicked.connect(lambda: self.set_gas_preset(5))
         presets_buttons_layout.addWidget(self.gas_normal_btn)
-
-        self.gas_fast_btn = QPushButton("🏃 Быстро (0.3 Gwei)")
-        self.gas_fast_btn.clicked.connect(lambda: self.set_gas_preset(0.3))
+        
+        self.gas_fast_btn = QPushButton("🏃 Быстро (10 Gwei)")
+        self.gas_fast_btn.clicked.connect(lambda: self.set_gas_preset(10))
         presets_buttons_layout.addWidget(self.gas_fast_btn)
-
-        self.gas_instant_btn = QPushButton("⚡ Мгновенно (0.5 Gwei)")
-        self.gas_instant_btn.clicked.connect(lambda: self.set_gas_preset(0.5))
+        
+        self.gas_instant_btn = QPushButton("⚡ Мгновенно (20 Gwei)")
+        self.gas_instant_btn.clicked.connect(lambda: self.set_gas_preset(20))
         presets_buttons_layout.addWidget(self.gas_instant_btn)
-
+        
         presets_layout.addLayout(presets_buttons_layout)
-
+        
         layout.addWidget(presets_group)
         layout.addStretch()
-
+        
         return widget
         
     def _create_tokens_settings(self) -> QWidget:

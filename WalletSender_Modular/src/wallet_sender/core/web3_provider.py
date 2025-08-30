@@ -33,8 +33,7 @@ class Web3Provider:
         """Подключение к BSC сети"""
         for i, rpc_url in enumerate(self.rpc_urls):
             try:
-                # Set a small timeout to avoid blocking the UI on slow RPCs
-                self.w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 3}))
+                self.w3 = Web3(Web3.HTTPProvider(rpc_url))
                 if self.w3.is_connected():
                     self.current_rpc_index = i
                     logger.info(f"✅ Подключен к BSC: {rpc_url}")

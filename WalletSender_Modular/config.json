@@ -15,7 +15,18 @@
         "WBNB": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
     },
     "pancakeswap_router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-    "bscscan_api_keys": [],
+    "bscscan_api_keys": [
+        "RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH",
+        "U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ",
+        "RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1"
+    ],
+    "etherscan_api_keys": [
+        "RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH",
+        "U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ",
+        "RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1"
+    ],
+    "api_rate_limit": 5,
+    "rotate_api_keys": true,
     "ui": {
         "window_width": 1400,
         "window_height": 900,

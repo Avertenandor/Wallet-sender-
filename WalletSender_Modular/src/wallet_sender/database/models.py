@@ -24,6 +24,7 @@ class Transaction(Base):
     gas_price = Column(Float)
     gas_used = Column(Integer)
     status = Column(String(20))  # pending, success, failed
+    type = Column(String(20), default='transfer')  # transfer, reward, distribution, buy, sell
     created_at = Column(DateTime, default=datetime.utcnow)
     confirmed_at = Column(DateTime)
     block_number = Column(Integer)

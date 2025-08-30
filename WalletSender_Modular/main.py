@@ -7,8 +7,6 @@ WalletSender Modular - Главная точка входа приложения
 """
 
 import sys
-import os
-import logging
 from pathlib import Path
 
 # Добавляем src в Python path
@@ -40,8 +38,10 @@ def main():
     
     try:
         # Атрибуты HighDPI должны быть установлены до создания QApplication
-        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+        if hasattr(Qt, 'AA_EnableHighDpiScaling'):
+            QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
+            QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
         # Создание приложения Qt
         app = QApplication(sys.argv)
         

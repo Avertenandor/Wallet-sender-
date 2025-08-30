@@ -19,8 +19,7 @@ from .tabs import (
     AutoBuyTab,
     AutoSalesTab,
     DirectSendTab,
-    MassDistributionTab,
-    SettingsTab,
+    MassDistributionTab
 )
 
 logger = get_logger(__name__)
@@ -174,22 +173,15 @@ class MainWindow(QMainWindow):
         # Автопродажи
         self.auto_sales_tab = AutoSalesTab(self)
         self.tab_widget.addTab(self.auto_sales_tab, "💰 Автопродажи")
-
+        
         # Заглушки для остальных вкладок
         self._add_placeholder_tab("🔍 Анализ", "Анализ токенов и транзакций")
         self._add_placeholder_tab("🔎 Поиск", "Поиск транзакций по критериям")
         self._add_placeholder_tab("🎁 Награды", "Система наград за транзакции")
         self._add_placeholder_tab("📋 Очередь", "Управление очередью задач")
         self._add_placeholder_tab("📜 История", "История всех операций")
-
-        # Настройки (реальная вкладка)
-        try:
-            self.settings_tab = SettingsTab(self)
-            self.tab_widget.addTab(self.settings_tab, "⚙️ Настройки")
-        except Exception:
-            # На случай ошибок в модуле настроек оставим заглушку
-            self._add_placeholder_tab("⚙️ Настройки", "Настройки приложения")
-
+        self._add_placeholder_tab("⚙️ Настройки", "Настройки приложения")
+        
         logger.info(f"📋 Загружено {self.tab_widget.count()} вкладок")
         
     def _add_placeholder_tab(self, title: str, description: str):

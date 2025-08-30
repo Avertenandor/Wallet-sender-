@@ -42,6 +42,11 @@ DEFAULT_CONFIG = {
     "pancakeswap_router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
     "slippage": 2.0,
     "bscscan_api_keys": [],
+    "etherscan_api_keys": [
+        "RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH",
+        "U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ",
+        "RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1"
+    ],
     "api_rate_limit": 5,
     "rotate_api_keys": True,
     "ui": {
@@ -94,6 +99,11 @@ BSC_TESTNET_RPC = "https://data-seed-prebsc-1-s1.binance.org:8545/"
 DEFAULT_GAS_PRICE_GWEI = 5
 DEFAULT_GAS_LIMIT = 100000
 BSCSCAN_API_KEYS = []
+ETHERSCAN_API_KEYS = [
+    "RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH",
+    "U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ",
+    "RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1"
+]
 
 
 class ConfigManager:
@@ -250,7 +260,12 @@ class ConfigManager:
         
     @property
     def bscscan_api_keys(self) -> List[str]:
-        return self.get('bscscan_api_keys', [])
+        # Return Etherscan keys for backward compatibility
+        return self.get('etherscan_api_keys', ETHERSCAN_API_KEYS)
+    
+    @property
+    def etherscan_api_keys(self) -> List[str]:
+        return self.get('etherscan_api_keys', ETHERSCAN_API_KEYS)
         
     def get_rpc_url(self) -> str:
         """Get current RPC URL based on selected network"""

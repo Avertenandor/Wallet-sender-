@@ -301,7 +301,157 @@ class DirectSendTab(BaseTab):
             QMessageBox.warning(self, "Ошибка", "Кошелек не подключен!")
             return
             
-        QMessageBox.information(self, "В разработке", "Функция отправки в разработке")
+        # Проверка заполнения полей
+        recipient = self.recipient_input.text().strip()
+        if not recipient or not self.web3.is_address(recipient):
+            QMessageBox.warning(self, "Ошибка", "Введите корректный адрес получателя!")
+            return
+            
+        amount = self.amount_input.value()
+        if amount <= 0:
+            QMessageBox.warning(self, "Ошибка", "Введите корректную сумму!")
+            return
+            
+        token_type = self.token_combo.currentText()
+        
+        # Блокируем кнопку на время отправки
+        self.send_btn.setEnabled(False)
+        self.send_btn.setText("Отправка...")
+        
+        try:
+            tx_hash = None
+            gas_price = self.get_gas_price_wei()  # Используем метод из базового класса
+            gas_limit = self.get_gas_limit()  # Используем метод из базового класса
+            
+            if token_type == "BNB":
+                # Отправка нативной валюты BNB
+                tx_hash = self._send_bnb(recipient, amount, gas_price, gas_limit)
+                
+            elif token_type in ["PLEX ONE", "USDT"]:
+                # Отправка токенов
+                token_address = CONTRACTS['PLEX_ONE'] if token_type == "PLEX ONE" else CONTRACTS['USDT']
+                tx_hash = self._send_token(recipient, amount, token_address, gas_price, gas_limit)
+                
+            elif token_type == "Другой...":
+                # Отправка пользовательского токена
+                token_address = self.custom_token_input.text().strip()
+                if not token_address or not self.web3.is_address(token_address):
+                    QMessageBox.warning(self, "Ошибка", "Введите корректный адрес токена!")
+                    return
+                tx_hash = self._send_token(recipient, amount, token_address, gas_price, gas_limit)
+                
+            if tx_hash:
+                # Добавляем в историю
+                self._add_to_history(token_type, recipient, amount, "✅ Успешно", tx_hash)
+                self.log(f"✅ Транзакция отправлена: {tx_hash}", "SUCCESS")
+                
+                # Показываем сообщение об успехе
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Успех")
+                msg.setText(f"Транзакция успешно отправлена!\n\nTx Hash: {tx_hash[:20]}...")
+                msg.setDetailedText(f"Полный хэш: {tx_hash}\n\nПолучатель: {recipient}\nСумма: {amount} {token_type}")
+                msg.exec_()
+                
+                # Обновляем баланс
+                self.refresh_balance()
+                
+                # Очищаем поля
+                self.recipient_input.clear()
+                self.amount_input.setValue(0)
+                
+        except Exception as e:
+            error_msg = str(e)
+            self._add_to_history(token_type, recipient, amount, "❌ Ошибка", "")
+            self.log(f"❌ Ошибка отправки: {error_msg}", "ERROR")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось отправить транзакцию:\n\n{error_msg}")
+            
+        finally:
+            # Восстанавливаем кнопку
+            self.send_btn.setEnabled(True)
+            self.send_btn.setText("🚀 Отправить")
+    
+    def _send_bnb(self, to_address: str, amount: float, gas_price: int, gas_limit: int) -> str:
+        """Отправка BNB"""
+        try:
+            # Конвертируем amount в Wei
+            amount_wei = self.web3.to_wei(amount, 'ether')
+            
+            # Получаем nonce
+            nonce = self.web3.eth.get_transaction_count(self.account.address)
+            
+            # Создаем транзакцию
+            transaction = {
+                'to': Web3.to_checksum_address(to_address),
+                'value': amount_wei,
+                'gas': gas_limit if gas_limit else 21000,
+                'gasPrice': gas_price,
+                'nonce': nonce,
+                'chainId': 56  # BSC Mainnet
+            }
+            
+            # Подписываем транзакцию
+            signed_txn = self.web3.eth.account.sign_transaction(transaction, self.account.key)
+            
+            # Отправляем транзакцию
+            tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            
+            # Ждем подтверждения
+            tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            
+            if tx_receipt['status'] == 1:
+                return tx_hash.hex()
+            else:
+                raise Exception("Транзакция отклонена сетью")
+                
+        except Exception as e:
+            logger.exception(f"Ошибка отправки BNB")
+            raise
+            
+    def _send_token(self, to_address: str, amount: float, token_address: str, gas_price: int, gas_limit: int) -> str:
+        """Отправка ERC20 токена"""
+        try:
+            # Создаем контракт токена
+            contract = self.web3.eth.contract(
+                address=Web3.to_checksum_address(token_address),
+                abi=ERC20_ABI
+            )
+            
+            # Получаем decimals токена
+            decimals = contract.functions.decimals().call()
+            amount_in_units = int(amount * (10 ** decimals))
+            
+            # Получаем nonce
+            nonce = self.web3.eth.get_transaction_count(self.account.address)
+            
+            # Создаем транзакцию transfer
+            transaction = contract.functions.transfer(
+                Web3.to_checksum_address(to_address),
+                amount_in_units
+            ).build_transaction({
+                'from': self.account.address,
+                'gas': gas_limit if gas_limit else 100000,
+                'gasPrice': gas_price,
+                'nonce': nonce,
+                'chainId': 56  # BSC Mainnet
+            })
+            
+            # Подписываем транзакцию
+            signed_txn = self.web3.eth.account.sign_transaction(transaction, self.account.key)
+            
+            # Отправляем транзакцию
+            tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            
+            # Ждем подтверждения
+            tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            
+            if tx_receipt['status'] == 1:
+                return tx_hash.hex()
+            else:
+                raise Exception("Транзакция отклонена сетью")
+                
+        except Exception as e:
+            logger.exception(f"Ошибка отправки токена")
+            raise
         
     def _add_to_history(self, token: str, recipient: str, amount: float, status: str, tx_hash: str = ""):
         """Добавление записи в историю"""

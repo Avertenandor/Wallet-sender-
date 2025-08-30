@@ -10,7 +10,7 @@ from typing import Optional
 
 from PyQt5.QtWidgets import (
 	QWidget, QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton,
-	QSpinBox, QDoubleSpinBox
+	QSpinBox
 )
 from PyQt5.QtGui import QFont
 
@@ -67,17 +67,13 @@ class BaseTab(QWidget):
 		return group
 
 	def create_gas_settings_group(self) -> QGroupBox:
-		"""Создание группы настроек газа с возможностью задать любое значение"""
 		group = QGroupBox("Настройки газа")
 		layout = QHBoxLayout()
 
 		layout.addWidget(QLabel("Цена газа (Gwei):"))
-		self.gas_price_input = QDoubleSpinBox()
-		self.gas_price_input.setRange(0.01, 1000.0)  # От 0.01 до 1000 Gwei
-		self.gas_price_input.setDecimals(2)  # 2 знака после запятой
-		self.gas_price_input.setSingleStep(0.01)  # Шаг изменения 0.01
-		self.gas_price_input.setValue(0.01)  # По умолчанию 0.01 Gwei
-		self.gas_price_input.setSuffix(" Gwei")
+		self.gas_price_input = QSpinBox()
+		self.gas_price_input.setRange(1, 1000)
+		self.gas_price_input.setValue(5)
 		layout.addWidget(self.gas_price_input)
 
 		layout.addWidget(QLabel("Лимит газа:"))
@@ -88,20 +84,6 @@ class BaseTab(QWidget):
 
 		group.setLayout(layout)
 		return group
-
-	def get_gas_price_wei(self) -> int:
-		"""Получение цены газа в Wei"""
-		if hasattr(self, 'gas_price_input'):
-			gwei_value = self.gas_price_input.value()
-			# 1 Gwei = 10^9 Wei
-			return int(gwei_value * 10**9)
-		return 10**7  # По умолчанию 0.01 Gwei = 10^7 Wei
-
-	def get_gas_limit(self) -> int:
-		"""Получение лимита газа"""
-		if hasattr(self, 'gas_limit_input'):
-			return self.gas_limit_input.value()
-		return 100000  # По умолчанию
 
 	# ----- Basic actions used by tabs -----
 	def connect_wallet(self):

@@ -32,6 +32,7 @@ class Database:
         self.db_url = db_url
         self.engine = None
         self.SessionLocal = None
+        self.session = None  # Для обратной совместимости
         
         self._init_database()
         
@@ -58,6 +59,9 @@ class Database:
             )
             
             logger.info(f"База данных инициализирована: {self.db_url}")
+            
+            # Создаем сессию для обратной совместимости
+            self.session = self.get_session()
             
         except Exception as e:
             logger.error(f"Ошибка инициализации базы данных: {e}")
