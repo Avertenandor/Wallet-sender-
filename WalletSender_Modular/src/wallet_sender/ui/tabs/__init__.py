@@ -15,3 +15,4 @@ from .search_tab import SearchTab  # noqa: F401
 from .rewards_tab import RewardsTab  # noqa: F401
 from .queue_tab import QueueTab  # noqa: F401
 from .history_tab import HistoryTab  # noqa: F401
+from .found_tx_tab import FoundTxTab  # noqa: F401

@@ -20,17 +20,14 @@ from .tabs import (
     AutoBuyTab,
     AutoSalesTab,
     DirectSendTab,
-<<<<<<< HEAD
-    MassDistributionTab
-=======
     MassDistributionTab,
     AnalysisTab,
     SearchTab,
     RewardsTab,
     QueueTab,
     HistoryTab,
-    SettingsTab
->>>>>>> c1c7980 (chore(release): bump version to 2.1.0 and show version in UI/About/logs)
+    SettingsTab,
+    FoundTxTab
 )
 
 logger = get_logger(__name__)
@@ -57,12 +54,12 @@ class MainWindow(QMainWindow):
         # Подключение сигналов
         self.connect_signals()
         
-    logger.info(f"🚀 WalletSender Modular v{__version__} запущен")
+        logger.info(f"🚀 WalletSender Modular v{__version__} запущен")
         
     def init_ui(self):
         """Инициализация пользовательского интерфейса"""
-    # Настройка окна
-    self.setWindowTitle(f"WalletSender Modular v{__version__} - Production")
+        # Настройка окна
+        self.setWindowTitle(f"WalletSender Modular v{__version__} - Production")
         self.setGeometry(100, 100, 1400, 900)
         
         # Центральный виджет
@@ -112,8 +109,8 @@ class MainWindow(QMainWindow):
         header_widget = QWidget()
         header_layout = QVBoxLayout(header_widget)
         
-    # Главный заголовок
-    title_label = QLabel(f"🚀 WalletSender Modular v{__version__}")
+        # Главный заголовок
+        title_label = QLabel(f"🚀 WalletSender Modular v{__version__}")
         title_font = QFont("Arial", 18, QFont.Bold)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
@@ -185,15 +182,6 @@ class MainWindow(QMainWindow):
         self.auto_sales_tab = AutoSalesTab(self)
         self.tab_widget.addTab(self.auto_sales_tab, "💰 Автопродажи")
         
-<<<<<<< HEAD
-        # Заглушки для остальных вкладок
-        self._add_placeholder_tab("🔍 Анализ", "Анализ токенов и транзакций")
-        self._add_placeholder_tab("🔎 Поиск", "Поиск транзакций по критериям")
-        self._add_placeholder_tab("🎁 Награды", "Система наград за транзакции")
-        self._add_placeholder_tab("📋 Очередь", "Управление очередью задач")
-        self._add_placeholder_tab("📜 История", "История всех операций")
-        self._add_placeholder_tab("⚙️ Настройки", "Настройки приложения")
-=======
         # Анализ
         self.analysis_tab = AnalysisTab(self)
         self.tab_widget.addTab(self.analysis_tab, "🔍 Анализ")
@@ -214,40 +202,15 @@ class MainWindow(QMainWindow):
         self.history_tab = HistoryTab(self)
         self.tab_widget.addTab(self.history_tab, "📜 История")
         
+        # Найденные транзакции
+        self.found_tx_tab = FoundTxTab(self)
+        self.tab_widget.addTab(self.found_tx_tab, "🔍 Найденные TX")
+        
         # Настройки
         self.settings_tab = SettingsTab(self)
         self.tab_widget.addTab(self.settings_tab, "⚙️ Настройки")
->>>>>>> c1c7980 (chore(release): bump version to 2.1.0 and show version in UI/About/logs)
         
         logger.info(f"📋 Загружено {self.tab_widget.count()} вкладок")
-        
-    def _add_placeholder_tab(self, title: str, description: str):
-        """Добавление заглушки для вкладки"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        # Заголовок
-        title_label = QLabel(title)
-        title_font = QFont("Arial", 14, QFont.Bold)
-        title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
-        
-        # Описание
-        desc_label = QLabel(description)
-        desc_label.setAlignment(Qt.AlignCenter)
-        desc_label.setStyleSheet("color: #666; padding: 20px;")
-        layout.addWidget(desc_label)
-        
-        # Статус
-        status_label = QLabel("🚧 В разработке")
-        status_label.setAlignment(Qt.AlignCenter)
-        status_label.setStyleSheet("color: orange; font-size: 18px; padding: 20px;")
-        layout.addWidget(status_label)
-        
-        layout.addStretch()
-        
-        self.tab_widget.addTab(widget, title)
         
     def _create_menu(self):
         """Создание меню приложения"""
@@ -343,8 +306,8 @@ class MainWindow(QMainWindow):
         
     def show_about(self):
         """Показать информацию о программе"""
-    about_text = f"""
-    <h2>WalletSender Modular v{__version__}</h2>
+        about_text = f"""
+        <h2>WalletSender Modular v{__version__}</h2>
         <p><b>Production Edition</b></p>
         <p>Профессиональный инструмент для работы с блокчейном BSC</p>
         <br>
@@ -355,12 +318,25 @@ class MainWindow(QMainWindow):
             <li>Автоматические покупки</li>
             <li>Автоматические продажи</li>
             <li>Анализ транзакций</li>
+            <li>Поиск и фильтрация</li>
             <li>Система наград</li>
+            <li>Управление очередью</li>
+            <li>История операций</li>
+            <li>Гибкие настройки</li>
+        </ul>
+        <br>
+        <p><b>Технологии:</b></p>
+        <ul>
+            <li>Python 3.12+</li>
+            <li>PyQt5</li>
+            <li>Web3.py</li>
+            <li>SQLAlchemy</li>
+            <li>Etherscan V2 API</li>
         </ul>
         <br>
         <p><b>Разработка:</b> 2025</p>
-    <p><b>Версия:</b> {__version__} Production</p>
-    """
+        <p><b>Версия:</b> {__version__} Production</p>
+        """
         
         QMessageBox.about(self, "О программе", about_text)
         

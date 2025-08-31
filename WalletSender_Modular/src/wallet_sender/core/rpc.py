@@ -11,9 +11,12 @@ from web3 import Web3
 from web3.exceptions import BlockNotFound, TransactionNotFound
 from web3.middleware import geth_poa_middleware
 from eth_account import Account
+from eth_typing import HexStr
+from hexbytes import HexBytes
 
 from ..utils.logger import get_logger
 from ..config import get_config
+from .models import Settings
 
 logger = get_logger(__name__)
 
@@ -383,3 +386,218 @@ def execute_with_retry(func: Callable, *args, **kwargs) -> Any:
     """Быстрое выполнение функции с ретраями"""
     pool = get_rpc_pool()
     return pool.execute_with_retry(func, *args, **kwargs)
+
+
+def get_receipts_batch(tx_hashes: List[str]) -> Dict[str, Optional[dict]]:
+    """Получение чеков для батча транзакций"""
+    pool = get_rpc_pool()
+    results = {}
+    
+    def get_receipt(w3: Web3, tx_hash: str):
+        try:
+            return w3.eth.get_transaction_receipt(HexStr(tx_hash))
+        except TransactionNotFound:
+            return None
+    
+    for tx_hash in tx_hashes:
+        try:
+            receipt = pool.execute_with_retry(get_receipt, tx_hash, max_retries=1)
+            results[tx_hash] = dict(receipt) if receipt else None
+        except Exception as e:
+            logger.error(f"Ошибка получения чека {tx_hash}: {e}")
+            results[tx_hash] = None
+    
+    return results
+
+
+def estimate_gas_safely(tx: dict) -> int:
+    """
+    Безопасная оценка газа для транзакции
+    
+    Args:
+        tx: Словарь транзакции
+        
+    Returns:
+        Оценка газа с запасом 20%
+    """
+    pool = get_rpc_pool()
+    
+    def estimate(w3: Web3, transaction: dict):
+        try:
+            gas_estimate = w3.eth.estimate_gas(transaction)
+            # Добавляем 20% запас
+            return int(gas_estimate * 1.2)
+        except Exception as e:
+            logger.warning(f"Ошибка оценки газа: {e}, используем значение по умолчанию")
+            # Возвращаем дефолтные значения
+            if 'data' in transaction and transaction['data']:
+                return 100000  # Для контрактных вызовов
+            return 21000  # Для простых переводов
+    
+    return pool.execute_with_retry(estimate, tx)
+
+
+def send_bnb(sender_key: str, to_address: str, amount_wei: int, 
+            gas_price_wei: Optional[int] = None, gas_limit: Optional[int] = None,
+            nonce: Optional[int] = None) -> str:
+    """
+    Отправка BNB
+    
+    Args:
+        sender_key: Приватный ключ отправителя
+        to_address: Адрес получателя
+        amount_wei: Сумма в wei
+        gas_price_wei: Цена газа в wei (None = автоматически)
+        gas_limit: Лимит газа (None = автоматически)
+        nonce: Nonce транзакции (None = автоматически)
+        
+    Returns:
+        Хэш транзакции
+    """
+    pool = get_rpc_pool()
+    
+    def send_tx(w3: Web3):
+        # Получаем аккаунт
+        account = Account.from_key(sender_key)
+        sender_address = account.address
+        
+        # Формируем транзакцию
+        tx = {
+            'from': sender_address,
+            'to': Web3.to_checksum_address(to_address),
+            'value': amount_wei,
+            'chainId': w3.eth.chain_id
+        }
+        
+        # Устанавливаем nonce
+        if nonce is not None:
+            tx['nonce'] = nonce
+        else:
+            tx['nonce'] = w3.eth.get_transaction_count(sender_address, 'pending')
+        
+        # Устанавливаем газ
+        if gas_price_wei is not None:
+            tx['gasPrice'] = gas_price_wei
+        else:
+            tx['gasPrice'] = w3.eth.gas_price
+        
+        if gas_limit is not None:
+            tx['gas'] = gas_limit
+        else:
+            tx['gas'] = estimate_gas_safely(tx)
+        
+        # Подписываем и отправляем
+        signed_tx = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        logger.info(f"BNB транзакция отправлена: {tx_hash.hex()}")
+        return tx_hash.hex()
+    
+    return pool.execute_with_retry(send_tx)
+
+
+def send_erc20(sender_key: str, token_address: str, to_address: str, 
+               amount_wei: int, gas_price_wei: Optional[int] = None,
+               gas_limit: Optional[int] = None, nonce: Optional[int] = None) -> str:
+    """
+    Отправка ERC20 токенов
+    
+    Args:
+        sender_key: Приватный ключ отправителя
+        token_address: Адрес контракта токена
+        to_address: Адрес получателя
+        amount_wei: Сумма в wei (с учетом decimals)
+        gas_price_wei: Цена газа в wei
+        gas_limit: Лимит газа
+        nonce: Nonce транзакции
+        
+    Returns:
+        Хэш транзакции
+    """
+    pool = get_rpc_pool()
+    
+    def send_tx(w3: Web3):
+        # Получаем аккаунт
+        account = Account.from_key(sender_key)
+        sender_address = account.address
+        
+        # ABI для ERC20 transfer
+        erc20_abi = [{
+            "constant": False,
+            "inputs": [
+                {"name": "_to", "type": "address"},
+                {"name": "_value", "type": "uint256"}
+            ],
+            "name": "transfer",
+            "outputs": [{"name": "", "type": "bool"}],
+            "type": "function"
+        }]
+        
+        # Создаем контракт
+        contract = w3.eth.contract(
+            address=Web3.to_checksum_address(token_address),
+            abi=erc20_abi
+        )
+        
+        # Формируем транзакцию
+        tx = contract.functions.transfer(
+            Web3.to_checksum_address(to_address),
+            amount_wei
+        ).build_transaction({
+            'from': sender_address,
+            'chainId': w3.eth.chain_id
+        })
+        
+        # Устанавливаем nonce
+        if nonce is not None:
+            tx['nonce'] = nonce
+        else:
+            tx['nonce'] = w3.eth.get_transaction_count(sender_address, 'pending')
+        
+        # Устанавливаем газ
+        if gas_price_wei is not None:
+            tx['gasPrice'] = gas_price_wei
+        else:
+            tx['gasPrice'] = w3.eth.gas_price
+        
+        if gas_limit is not None:
+            tx['gas'] = gas_limit
+        else:
+            tx['gas'] = estimate_gas_safely(tx)
+        
+        # Подписываем и отправляем
+        signed_tx = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        logger.info(f"ERC20 транзакция отправлена: {tx_hash.hex()}")
+        return tx_hash.hex()
+    
+    return pool.execute_with_retry(send_tx)
+
+
+def normalize_error(error: Exception) -> str:
+    """
+    Нормализация ошибок в коды
+    
+    Args:
+        error: Исключение
+        
+    Returns:
+        Код ошибки
+    """
+    error_str = str(error).lower()
+    
+    if 'nonce too low' in error_str:
+        return 'nonce_too_low'
+    elif 'replacement transaction underpriced' in error_str:
+        return 'replacement_underpriced'
+    elif 'insufficient funds' in error_str:
+        return 'insufficient_funds'
+    elif 'transaction underpriced' in error_str:
+        return 'tx_underpriced'
+    elif 'timeout' in error_str:
+        return 'timeout'
+    elif 'connection' in error_str or 'rpc' in error_str:
+        return 'rpc_unavailable'
+    else:
+        return 'unknown_error'
