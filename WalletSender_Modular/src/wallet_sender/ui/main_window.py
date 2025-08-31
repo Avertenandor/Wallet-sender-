@@ -4,11 +4,26 @@
 Главное окно WalletSender Modular
 """
 
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QTabWidget, QLabel, QStatusBar, QMenuBar, QAction,
-                             QMessageBox, QProgressBar, QTextEdit)
+# Всегда используем слой совместимости Qt
+from PyQt5.QtWidgets import (
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QTabWidget,
+    QLabel,
+    QStatusBar,
+    QMenuBar,
+    QAction,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QTextEdit,
+    QScrollBar,
+    QSplitter,
+)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtGui import QIcon, QFont, QCloseEvent
 
 from ..utils.logger import get_logger
 from .. import __version__
@@ -16,19 +31,7 @@ from ..config import Config
 from ..core.web3_provider import Web3Provider
 
 # Импорт вкладок
-from .tabs import (
-    AutoBuyTab,
-    AutoSalesTab,
-    DirectSendTab,
-    MassDistributionTab,
-    AnalysisTab,
-    SearchTab,
-    RewardsTab,
-    QueueTab,
-    HistoryTab,
-    SettingsTab,
-    FoundTxTab
-)
+# Вкладки импортируем лениво внутри _load_tabs, чтобы избежать создания QWidget до QApplication
 
 logger = get_logger(__name__)
 
@@ -73,8 +76,12 @@ class MainWindow(QMainWindow):
         self._create_header(main_layout)
         
         # Splitter для вкладок и логов
-        from PyQt5.QtWidgets import QSplitter
-        splitter = QSplitter(Qt.Vertical)
+        try:
+            # PyQt6
+            splitter = QSplitter(Qt.Orientation.Vertical)  # type: ignore[attr-defined]
+        except AttributeError:
+            # PyQt5
+            splitter = QSplitter(Qt.Vertical)  # type: ignore[attr-defined]
         main_layout.addWidget(splitter)
         
         # Вкладки
@@ -111,15 +118,37 @@ class MainWindow(QMainWindow):
         
         # Главный заголовок
         title_label = QLabel(f"🚀 WalletSender Modular v{__version__}")
-        title_font = QFont("Arial", 18, QFont.Bold)
+        # PyQt6: QFont.Weight.Bold, PyQt5: QFont.Bold — используем безопасный доступ
+        try:
+            # Для PyQt6
+            weight = QFont.Weight.Bold  # type: ignore[attr-defined]
+        except AttributeError:
+            # Для PyQt5
+            try:
+                weight = QFont.Bold  # type: ignore[attr-defined]
+            except AttributeError:
+                # Fallback на числовое значение
+                weight = 75
+        title_font = QFont("Arial", 18)
+        title_font.setWeight(weight)
         title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignCenter)
+        try:
+            # PyQt6
+            title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
+        except AttributeError:
+            # PyQt5
+            title_label.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
         title_label.setStyleSheet("color: #4CAF50; padding: 10px;")
         header_layout.addWidget(title_label)
         
         # Подзаголовок
         subtitle_label = QLabel("Production Edition - Профессиональное решение для BSC")
-        subtitle_label.setAlignment(Qt.AlignCenter)
+        try:
+            # PyQt6
+            subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)  # type: ignore[attr-defined]
+        except AttributeError:
+            # PyQt5
+            subtitle_label.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
         subtitle_label.setStyleSheet("color: #666; font-size: 12px;")
         header_layout.addWidget(subtitle_label)
         
@@ -158,6 +187,20 @@ class MainWindow(QMainWindow):
     
     def _load_tabs(self):
         """Загрузка вкладок приложения"""
+        # Ленивая загрузка модулей вкладок (после создания QApplication)
+        from .tabs import (
+            AutoBuyTab,
+            AutoSalesTab,
+            DirectSendTab,
+            MassDistributionTab,
+            AnalysisTab,
+            SearchTab,
+            RewardsTab,
+            QueueTab,
+            HistoryTab,
+            SettingsTab,
+            FoundTxTab,
+        )
         # Массовая рассылка (основная)
         self.mass_distribution_tab = MassDistributionTab(self, slot_number=1)
         self.tab_widget.addTab(self.mass_distribution_tab, "⚽ Массовая рассылка")
@@ -212,51 +255,55 @@ class MainWindow(QMainWindow):
         
         logger.info(f"📋 Загружено {self.tab_widget.count()} вкладок")
         
-    def _create_menu(self):
+    def _create_menu(self) -> None:
         """Создание меню приложения"""
-        menubar = self.menuBar()
-        
+        menubar: QMenuBar = self.menuBar()
+
         # Меню Файл
-        file_menu = menubar.addMenu('Файл')
-        
+        file_menu: QMenu = menubar.addMenu('Файл')
+
         # Экспорт логов
         export_logs_action = QAction('Экспорт логов', self)
         export_logs_action.triggered.connect(self.export_logs)
         file_menu.addAction(export_logs_action)
-        
+
         file_menu.addSeparator()
-        
+
         # Выход
         exit_action = QAction('Выход', self)
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self._on_exit)
         file_menu.addAction(exit_action)
-        
+
         # Меню Инструменты
-        tools_menu = menubar.addMenu('Инструменты')
-        
+        tools_menu: QMenu = menubar.addMenu('Инструменты')
+
         # Очистить логи
         clear_logs_action = QAction('Очистить логи', self)
         clear_logs_action.triggered.connect(self.clear_logs)
         tools_menu.addAction(clear_logs_action)
-        
+
         # Меню Помощь
-        help_menu = menubar.addMenu('Помощь')
-        
+        help_menu: QMenu = menubar.addMenu('Помощь')
+
         # О программе
         about_action = QAction('О программе', self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+    def _on_exit(self) -> None:
+        """Аккуратно закрыть окно через QAction without returning bool"""
+        self.close()
         
     def connect_signals(self):
         """Подключение сигналов"""
         self.log_message.connect(self.add_log)
         
     @pyqtSlot(str, str)
-    def add_log(self, message: str, level: str = "INFO"):
+    def add_log(self, message: str, level: str = "INFO") -> None:
         """Добавление сообщения в лог"""
-        timestamp = QTimer().singleShot(0, lambda: self._add_log_impl(message, level))
+        QTimer().singleShot(0, lambda: self._add_log_impl(message, level))
         
-    def _add_log_impl(self, message: str, level: str):
+    def _add_log_impl(self, message: str, level: str) -> None:
         """Реализация добавления лога"""
         from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -276,12 +323,18 @@ class MainWindow(QMainWindow):
         self.log_area.append(formatted_message)
         
         # Прокрутка вниз
-        scrollbar = self.log_area.verticalScrollBar()
+        scrollbar: QScrollBar = self.log_area.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
         
     def export_logs(self):
         """Экспорт логов в файл"""
-        from PyQt5.QtWidgets import QFileDialog
+        try:
+            from PyQt6.QtWidgets import QFileDialog
+        except ImportError:
+            try:
+                from PyQt5.QtWidgets import QFileDialog
+            except ImportError:
+                from PySide6.QtWidgets import QFileDialog
         from datetime import datetime
         
         filename, _ = QFileDialog.getSaveFileName(
@@ -346,17 +399,30 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(value)
         self.progress_bar.setVisible(value > 0 and value < maximum)
         
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Обработка закрытия окна"""
-        reply = QMessageBox.question(
-            self,
-            'Подтверждение',
-            'Вы уверены, что хотите выйти?',
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
+        try:
+            # PyQt6
+            reply = QMessageBox.question(
+                self,
+                'Подтверждение',
+                'Вы уверены, что хотите выйти?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,  # type: ignore[attr-defined]
+                QMessageBox.StandardButton.No  # type: ignore[attr-defined]
+            )
+            yes_button = QMessageBox.StandardButton.Yes  # type: ignore[attr-defined]
+        except AttributeError:
+            # PyQt5
+            reply = QMessageBox.question(
+                self,
+                'Подтверждение',
+                'Вы уверены, что хотите выйти?',
+                QMessageBox.Yes | QMessageBox.No,  # type: ignore[attr-defined]
+                QMessageBox.No  # type: ignore[attr-defined]
+            )
+            yes_button = QMessageBox.Yes  # type: ignore[attr-defined]
+
+        if reply == yes_button:
             # Остановка таймеров
             if hasattr(self, 'network_check_timer'):
                 self.network_check_timer.stop()

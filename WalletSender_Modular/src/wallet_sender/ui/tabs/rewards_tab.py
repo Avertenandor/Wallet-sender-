@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
+    QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit, QWidget,
     QPushButton, QTableWidget, QTableWidgetItem, QProgressBar,
     QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QHeaderView,
     QAbstractItemView, QMessageBox, QMenu, QApplication,
@@ -23,10 +23,9 @@ import csv
 
 from .base_tab import BaseTab
 from ...core.wallet_manager import WalletManager
-from ...core.wallet_sender import WalletSender  
 from ...services.token_service import TokenService
 from ...constants import PLEX_CONTRACT, USDT_CONTRACT
-from ...database.database import DatabaseManager
+from ...database.database import Database
 from ...utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -42,20 +41,20 @@ class RewardsTab(BaseTab):
     
     def __init__(self, main_window, parent=None):
         super().__init__(main_window, parent)
-        
+
         # Инициализация сервисов
         self.wallet_manager = None
         self.wallet_sender = None
         self.token_service = None
-        self.database = DatabaseManager()
-        
+        self.database = Database()
+
         # Переменные состояния
         self.rewards_list = []
         self.selected_rewards = []
         self.is_sending = False
         self.stop_sending_event = threading.Event()
         self.rewards_configs = {}
-        
+
         # Подключение сигналов
         self.update_rewards_signal.connect(self._update_rewards_table)
         self.sending_progress_signal.connect(self._update_sending_progress)
@@ -102,6 +101,45 @@ class RewardsTab(BaseTab):
         
         layout.addWidget(log_group)
         
+    @pyqtSlot(list)
+    def _update_rewards_table(self, rewards: List[Dict[str, Any]]):
+        """Обновление таблицы наград из списка.
+        Ожидается список словарей с ключами: address, amount, token, source, created_at, status, tx_hash.
+        """
+        try:
+            self.rewards_list = rewards or []
+            self.rewards_table.setRowCount(0)
+            for reward in self.rewards_list:
+                row = self.rewards_table.rowCount()
+                self.rewards_table.insertRow(row)
+                # ✓ чекбокс
+                check_item = QTableWidgetItem()
+                check_item.setCheckState(Qt.Checked)
+                self.rewards_table.setItem(row, 0, check_item)
+                # Адрес
+                addr_item = QTableWidgetItem(reward.get('address', ''))
+                addr_item.setData(Qt.UserRole, reward.get('address', ''))
+                self.rewards_table.setItem(row, 1, addr_item)
+                # Сумма
+                self.rewards_table.setItem(row, 2, QTableWidgetItem(str(reward.get('amount', ''))))
+                # Токен
+                self.rewards_table.setItem(row, 3, QTableWidgetItem(reward.get('token', '')))
+                # Источник
+                self.rewards_table.setItem(row, 4, QTableWidgetItem(reward.get('source', '')))
+                # Дата
+                self.rewards_table.setItem(row, 5, QTableWidgetItem(reward.get('created_at', '')))
+                # Статус
+                self.rewards_table.setItem(row, 6, QTableWidgetItem(reward.get('status', 'New')))
+                # TX Hash
+                tx = reward.get('tx_hash', '')
+                tx_item = QTableWidgetItem(f"{tx[:10]}..." if tx else '')
+                tx_item.setData(Qt.UserRole, tx)
+                self.rewards_table.setItem(row, 7, tx_item)
+            self._update_statistics()
+        except Exception as e:
+            logger.error(f"Ошибка обновления таблицы наград: {e}")
+            QMessageBox.warning(self, "Ошибка", f"Не удалось обновить список наград: {e}")
+
     def _create_rewards_panel(self) -> QWidget:
         """Создание панели со списком наград"""
         widget = QWidget()

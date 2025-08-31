@@ -19,7 +19,7 @@ from PyQt5.QtGui import QColor
 
 from .base_tab import BaseTab
 from ...database.models import Transaction
-from ...database.database import DatabaseManager
+from ...database.database import Database
 from ...utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,7 +61,7 @@ class HistoryTab(BaseTab):
     
     def __init__(self, main_window, parent=None):
         super().__init__(main_window, parent)
-        self.db_manager = DatabaseManager()
+        self.db_manager = Database()
         self.status_checker = None
         
     def init_ui(self):
