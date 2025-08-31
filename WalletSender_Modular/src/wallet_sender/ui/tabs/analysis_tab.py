@@ -14,8 +14,8 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QRadioButton, QButtonGroup, QFormLayout,
     QMessageBox, QMenu, QApplication
 )
-from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer
-from PyQt5.QtGui import QColor, QDesktopServices, QUrl
+from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer, QUrl
+from PyQt5.QtGui import QColor, QDesktopServices
 
 from web3 import Web3
 import requests
@@ -635,4 +635,17 @@ class AnalysisTab(BaseTab):
                     for row in range(self.results_table.rowCount()):
                         line = []
                         for col in range(self.results_table.columnCount()):
-                            item = self
+                            item = self.results_table.item(row, col)
+                            if item:
+                                line.append(item.text())
+                            else:
+                                line.append('')
+                        f.write(','.join(line) + '\n')
+                
+                self.log(f"Результаты экспортированы: {path}", "SUCCESS")
+                QMessageBox.information(self, "Успех", "Результаты успешно экспортированы!")
+                
+            except Exception as e:
+                logger.error(f"Ошибка экспорта: {e}")
+                self.log(f"Ошибка экспорта: {str(e)}", "ERROR")
+                QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать результаты:\n{str(e)}")
