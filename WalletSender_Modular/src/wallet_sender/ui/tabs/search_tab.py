@@ -14,8 +14,8 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QDateEdit, QCheckBox, QMessageBox,
     QMenu, QApplication, QFileDialog
 )
-from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer, QDate
-from PyQt5.QtGui import QColor, QDesktopServices, QUrl
+from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer, QDate, QUrl
+from PyQt5.QtGui import QColor, QDesktopServices
 
 from web3 import Web3
 import requests

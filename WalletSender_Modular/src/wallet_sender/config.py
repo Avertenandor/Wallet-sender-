@@ -3,7 +3,6 @@ Configuration management for WalletSender application
 """
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 from copy import deepcopy
@@ -14,7 +13,7 @@ __author__ = "Avertenandor"
 __description__ = "Модульная версия WalletSender для массовой рассылки токенов BSC"
 
 # Default configuration
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: Dict[str, Any] = {
     "network": "bsc_mainnet",
     "autosave": True,
     "confirm_operations": True,
@@ -122,7 +121,7 @@ class ConfigManager:
         module_dir = Path(__file__).parent.parent.parent  # Go up to WalletSender_Modular
         self.config_file = module_dir / config_file
         self.config: Dict[str, Any] = {}
-        self.defaults = deepcopy(DEFAULT_CONFIG)
+        self.defaults: Dict[str, Any] = deepcopy(DEFAULT_CONFIG)
         self.load()
         
     def load(self) -> None:
@@ -130,7 +129,7 @@ class ConfigManager:
         try:
             if self.config_file.exists():
                 with open(self.config_file, 'r', encoding='utf-8') as f:
-                    loaded_config = json.load(f)
+                    loaded_config: Dict[str, Any] = json.load(f)
                     # Merge with defaults to ensure all keys exist
                     self.config = self._merge_configs(deepcopy(self.defaults), loaded_config)
             else:
@@ -164,14 +163,14 @@ class ConfigManager:
             Configuration value
         """
         keys = key.split('.')
-        value = self.config
-        
+        value: Any = self.config
+
         for k in keys:
             if isinstance(value, dict) and k in value:
                 value = value[k]
             else:
                 return default
-                
+
         return value
         
     def set(self, key: str, value: Any) -> None:
@@ -203,7 +202,7 @@ class ConfigManager:
         self.config = deepcopy(self.defaults)
         self.save()
         
-    def _merge_configs(self, base: Dict, update: Dict) -> Dict:
+    def _merge_configs(self, base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
         """
         Recursively merge two configuration dictionaries
         
@@ -280,7 +279,7 @@ class Config:
     def __init__(self):
         self._manager = ConfigManager()
         
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         # Delegate to ConfigManager
         return getattr(self._manager, name)
         

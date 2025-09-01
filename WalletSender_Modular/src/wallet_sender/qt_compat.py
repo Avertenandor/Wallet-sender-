@@ -8,44 +8,61 @@ import os
 # Флаг для отслеживания, какой бэкенд используется
 QT_BACKEND = None
 
-# Пытаемся импортировать доступный Qt бэкенд
+# Пытаемся импортировать доступный Qt бэкенд (минимальный набор импортов)
+backend_error = None
 try:
-    # Сначала пробуем PyQt6
-    from PyQt6.QtWidgets import *
-    from PyQt6.QtCore import *
-    from PyQt6.QtGui import *
-    QT_BACKEND = 'PyQt6'
-    
-    # Для совместимости добавляем некоторые константы из PyQt5
-    if not hasattr(Qt, 'MidButton'):
-        Qt.MidButton = Qt.MouseButton.MiddleButton
-    
-except ImportError:
+    # Сначала пробуем PyQt5 (самый стабильный для проекта)
+    from PyQt5.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QTabWidget, QLabel, QStatusBar, QMenuBar, QAction, QMenu,
+        QMessageBox, QProgressBar, QTextEdit, QFileDialog, QSplitter,
+        QScrollBar, QGroupBox, QPushButton, QLineEdit, QComboBox,
+        QTableWidget, QTableWidgetItem, QHeaderView
+    )
+    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QCoreApplication
+    from PyQt5.QtGui import QIcon, QFont, QCloseEvent
+    QT_BACKEND = 'PyQt5'
+except Exception as e:
+    backend_error = e
     try:
-        # Затем пробуем PyQt5
-        from PyQt5.QtWidgets import *
-        from PyQt5.QtCore import *
-        from PyQt5.QtGui import *
-        QT_BACKEND = 'PyQt5'
-        
-    except ImportError:
+        # Затем пробуем PyQt6
+        from PyQt6.QtWidgets import (
+            QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+            QTabWidget, QLabel, QStatusBar, QMenuBar, QAction, QMenu,
+            QMessageBox, QProgressBar, QTextEdit, QFileDialog, QSplitter,
+            QScrollBar, QGroupBox, QPushButton, QLineEdit, QComboBox,
+            QTableWidget, QTableWidgetItem, QHeaderView
+        )
+        from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QCoreApplication
+        from PyQt6.QtGui import QIcon, QFont, QCloseEvent
+        QT_BACKEND = 'PyQt6'
+        if not hasattr(Qt, 'MidButton'):
+            Qt.MidButton = Qt.MouseButton.MiddleButton  # type: ignore[attr-defined]
+    except Exception as e2:
+        backend_error = e2
         try:
             # В крайнем случае пробуем PySide6
-            from PySide6.QtWidgets import *
-            from PySide6.QtCore import *
-            from PySide6.QtGui import *
+            from PySide6.QtWidgets import (
+                QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                QTabWidget, QLabel, QStatusBar, QMenuBar, QAction, QMenu,
+                QMessageBox, QProgressBar, QTextEdit, QFileDialog, QSplitter,
+                QScrollBar, QGroupBox, QPushButton, QLineEdit, QComboBox,
+                QTableWidget, QTableWidgetItem, QHeaderView
+            )
+            from PySide6.QtCore import (
+                Qt, QTimer, Signal as pyqtSignal, Slot as pyqtSlot, QCoreApplication
+            )
+            from PySide6.QtGui import QIcon, QFont, QCloseEvent
             QT_BACKEND = 'PySide6'
-            
-            # Для совместимости с PyQt5 сигналами
-            Signal = QtCore.Signal
-            Slot = QtCore.Slot
-            
-        except ImportError:
+        except Exception as e3:
+            backend_error = e3
             print("ОШИБКА: Не найден ни один Qt бэкенд!")
             print("Установите один из следующих пакетов:")
             print("  pip install PyQt6")
             print("  pip install PyQt5") 
             print("  pip install PySide6")
+            if backend_error:
+                print(f"Последняя ошибка импорта: {backend_error}")
             sys.exit(1)
 
 

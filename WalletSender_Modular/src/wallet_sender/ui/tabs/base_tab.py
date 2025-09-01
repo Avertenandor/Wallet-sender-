@@ -136,3 +136,7 @@ class BaseTab(QWidget):
 		# Fallback
 		print(f"[{level}] {message}")
 
+	# Backward-compat alias used by some tabs
+	def log_message(self, message: str, level: str = "INFO"):
+		self.log(message, level)
+

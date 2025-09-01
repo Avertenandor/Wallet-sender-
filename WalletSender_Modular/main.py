@@ -7,67 +7,74 @@ WalletSender Modular - Главная точка входа приложения
 """
 
 import sys
+import logging
 from pathlib import Path
-
-# Добавляем src в Python path
+# Добавляем src в Python path (для запуска из корня проекта)
 current_dir = Path(__file__).parent
 src_path = current_dir / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
-# Импорты модулей
-try:
-    # Сначала импортируем qt_compat для настройки High DPI
-    from wallet_sender.qt_compat import enable_high_dpi, QT_BACKEND
-    
-    from PyQt5.QtWidgets import QApplication, QMessageBox
-    from PyQt5.QtCore import Qt
-    import qdarkstyle
-    
-    from wallet_sender.ui.main_window import MainWindow
-    from wallet_sender import __version__
-    from wallet_sender.utils.logger import setup_logger
-    
-except ImportError as e:
-    print(f"Ошибка импорта: {e}")
-    print("Убедитесь что установлены все зависимости:")
-    print("pip install -r requirements.txt")
-    sys.exit(1)
+# Импорты Qt и модулей приложения (PyQt5)
+from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtCore import Qt
+from wallet_sender import __version__
+from wallet_sender.utils.logger import setup_logger
 
-def main():
-    """Главная функция приложения"""
-    # Настройка логгера
-    logger = setup_logger("WalletSender_Modular", "wallet_sender_modular.log")
+
+def main() -> int:
+    """Главная функция приложения.
+
+    Возвращает код выхода для sys.exit.
+    """
+    logger: logging.Logger = setup_logger("WalletSender_Modular", "wallet_sender_modular.log")
     logger.info(f"🚀 Запуск WalletSender Modular v{__version__}")
-    logger.info(f"Qt бэкенд: {QT_BACKEND}")
-    
+    logger.info("Qt бэкенд: PyQt5")
+
     try:
-        # Включаем поддержку High DPI через qt_compat
-        enable_high_dpi()
-        # Создание приложения Qt
+        # Включаем поддержку High DPI для PyQt5
+        if hasattr(Qt, 'AA_EnableHighDpiScaling'):
+            QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
+            QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
+        # Создаем приложение Qt
         app = QApplication(sys.argv)
-        
-        # Применение темной темы (без падения при отсутствии)
+
+        # Применяем темную тему, если доступна
         try:
+            import qdarkstyle  # type: ignore[import]
+            # Рекомендуется использовать стиль Fusion перед qdarkstyle
+            app.setStyle('Fusion')
             app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
-        except Exception:
-            pass
-        
-        # Создание главного окна
+            logger.info("🎨 Dark theme applied (qdarkstyle + Fusion).")
+        except Exception as e:
+            logger.warning(f"Не удалось применить темную тему: {e}")
+
+        # Создаем и показываем главное окно (ленивый импорт после QApplication)
+        from wallet_sender.ui.main_window import MainWindow
         window = MainWindow()
         window.show()
-        
         logger.info("✅ Главное окно создано и отображено")
-        
-        # Запуск цикла событий
-        sys.exit(app.exec_())
-        
+
+        # Запуск цикла событий (совместимость PyQt5/PyQt6)
+        run_loop = getattr(app, 'exec', None) or getattr(app, 'exec_', None)
+        if run_loop is None:
+            raise RuntimeError('Не найден метод запуска цикла событий Qt')
+        return run_loop()
+
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
-        if 'app' in locals():
-            QMessageBox.critical(None, "Критическая ошибка", 
-                               f"Не удалось запустить приложение:\n{e}")
-        sys.exit(1)
+        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
+        try:
+            QMessageBox.critical(
+                None,
+                "Критическая ошибка",
+                f"Не удалось запустить приложение:\n{e}"
+            )
+        except Exception:
+            pass
+        return 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

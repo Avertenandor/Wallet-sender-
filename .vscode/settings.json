@@ -1,0 +1,17 @@
+{
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/WalletSender_Modular/src",
+    "./WalletSender_Modular/src"
+  ],
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.stubPath": "${workspaceFolder}/WalletSender_Modular/typings",
+  "python.analysis.reportMissingTypeStubs": "none",
+  "python.autoComplete.extraPaths": [
+    "${workspaceFolder}/WalletSender_Modular/src",
+    "./WalletSender_Modular/src"
+  ],
+  "python.terminal.activateEnvironment": true,
+  "python.linting.enabled": true,
+  "python.linting.pylintEnabled": false,
+  "python.linting.flake8Enabled": false
+}

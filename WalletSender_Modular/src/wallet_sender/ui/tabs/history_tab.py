@@ -19,7 +19,7 @@ from PyQt5.QtGui import QColor
 
 from .base_tab import BaseTab
 from ...database.models import Transaction
-from ...database.database import DatabaseManager
+from ...database.database import Database
 from ...utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -60,9 +60,11 @@ class HistoryTab(BaseTab):
     """Вкладка истории операций"""
     
     def __init__(self, main_window, parent=None):
-        super().__init__(main_window, parent)
-        self.db_manager = DatabaseManager()
+        # Важно: создать менеджер БД до вызова BaseTab.__init__,
+        # т.к. BaseTab вызывает init_ui(), где используется db_manager (load_history)
+        self.db_manager = Database()
         self.status_checker = None
+        super().__init__(main_window, parent)
         
     def init_ui(self):
         """Инициализация интерфейса"""

@@ -4,7 +4,7 @@
 
 import threading
 import time
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
@@ -12,17 +12,18 @@ from PyQt5.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QProgressBar,
     QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QHeaderView,
     QAbstractItemView, QRadioButton, QButtonGroup, QFormLayout,
-    QMessageBox, QMenu, QApplication
+    QMessageBox, QMenu, QApplication, QAction
 )
-from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer, QUrl
+from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer, QUrl, QPoint
 from PyQt5.QtGui import QColor, QDesktopServices
 
 from web3 import Web3
 import requests
 
 from .base_tab import BaseTab
-from ...core.web3_provider import Web3Provider
-from ...services.token_service import TokenService
+if TYPE_CHECKING:  # only for type checkers
+    from ...core.web3_provider import Web3Provider
+    from ...services.token_service import TokenService
 from ...constants import PLEX_CONTRACT, USDT_CONTRACT, BSCSCAN_URL, BSCSCAN_KEYS
 from ...utils.logger import get_logger
 
@@ -38,18 +39,16 @@ class AnalysisTab(BaseTab):
     
     def __init__(self, main_window, parent=None):
         super().__init__(main_window, parent)
-        
         # Инициализация переменных
-        self.web3_provider = None
-        self.token_service = None
-        self.is_searching = False
-        self.stop_search_event = threading.Event()
-        self.search_thread = None
-        self.current_api_key_index = 0
-        
+        self.web3_provider: Optional["Web3Provider"] = None
+        self.token_service: Optional["TokenService"] = None
+        self.is_searching: bool = False
+        self.stop_search_event: threading.Event = threading.Event()
+        self.search_thread: Optional[threading.Thread] = None
+        self.current_api_key_index: int = 0
         # Подключение сигналов
-        self.update_table_signal.connect(self._update_search_results)
-        self.search_finished_signal.connect(self._on_search_finished)
+        self.update_table_signal.connect(self._update_search_results)  # type: ignore
+        self.search_finished_signal.connect(self._on_search_finished)  # type: ignore
         
     def init_ui(self):
         """Инициализация интерфейса вкладки анализа"""
@@ -83,8 +82,8 @@ class AnalysisTab(BaseTab):
         
         header = self.results_table.horizontalHeader()
         if header:
-            header.setSectionResizeMode(QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(0, QHeaderView.Stretch)
+                header.setSectionResizeMode(QHeaderView.ResizeToContents)  # type: ignore
+                header.setSectionResizeMode(0, QHeaderView.Stretch)  # type: ignore
         
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.results_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -163,7 +162,6 @@ class AnalysisTab(BaseTab):
         self.exact_amount.setEnabled(False)
         amount_layout.addWidget(QLabel("Точная:"))
         amount_layout.addWidget(self.exact_amount)
-        
         # Диапазон
         self.min_amount = QDoubleSpinBox()
         self.min_amount.setRange(0, 1000000)
@@ -171,7 +169,6 @@ class AnalysisTab(BaseTab):
         self.min_amount.setValue(10)
         self.min_amount.setEnabled(False)
         amount_layout.addWidget(QLabel("От:"))
-        amount_layout.addWidget(self.min_amount)
         
         self.max_amount = QDoubleSpinBox()
         self.max_amount.setRange(0, 1000000)
@@ -364,7 +361,7 @@ class AnalysisTab(BaseTab):
     
     def _get_search_params(self) -> Dict[str, Any]:
         """Получение параметров поиска"""
-        params = {
+        params: Dict[str, Any] = {
             'max_pages': self.max_pages.value(),
             'delay_seconds': self.delay_seconds.value(),
             'mode': 'all'
@@ -408,12 +405,12 @@ class AnalysisTab(BaseTab):
         wallet_address: str, 
         token_contract: Optional[str],
         search_params: Dict[str, Any]
-    ) -> Tuple[List[Dict], Dict[str, int], Dict[str, List[Dict]]]:
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, int], Dict[str, List[Dict[str, Any]]]]:
         """Постраничный поиск транзакций"""
         
-        matching_transactions = []
-        sender_counter = {}
-        sender_details = {}
+        matching_transactions: List[Dict[str, Any]] = []
+        sender_counter: Dict[str, int] = {}
+        sender_details: Dict[str, List[Dict[str, Any]]] = {}
         
         page = 1
         max_pages = search_params['max_pages']
@@ -427,7 +424,7 @@ class AnalysisTab(BaseTab):
             self._log_to_search(f"Запрашиваем страницу {page}/{max_pages}...")
             
             # Формируем параметры запроса
-            params = {
+            params_req: Dict[str, Any] = {
                 'module': 'account',
                 'action': 'tokentx',
                 'address': wallet_address,
@@ -438,11 +435,11 @@ class AnalysisTab(BaseTab):
             }
             
             if token_contract:
-                params['contractaddress'] = token_contract
+                params_req['contractaddress'] = token_contract
             
             try:
                 # Выполняем запрос к API
-                response = requests.get(BSCSCAN_URL, params=params, timeout=10)
+                response = requests.get(BSCSCAN_URL, params=params_req, timeout=10)
                 data = response.json()
                 
                 if data.get('status') != '1':
@@ -489,7 +486,7 @@ class AnalysisTab(BaseTab):
         
         return matching_transactions, sender_counter, sender_details
     
-    def _filter_transaction(self, tx: Dict, wallet_address: str, params: Dict) -> bool:
+    def _filter_transaction(self, tx: Dict[str, Any], wallet_address: str, params: Dict[str, Any]) -> bool:
         """Фильтрация транзакции по параметрам"""
         # Проверяем, что это входящая транзакция
         if tx.get('to', '').lower() != wallet_address.lower():
@@ -517,13 +514,13 @@ class AnalysisTab(BaseTab):
         QTimer.singleShot(0, lambda: self.search_log.append(message))
     
     @pyqtSlot(list, dict, dict)
-    def _update_search_results(self, transactions: List, counter: Dict, details: Dict):
+    def _update_search_results(self, transactions: List[Dict[str, Any]], counter: Dict[str, int], details: Dict[str, List[Dict[str, Any]]]) -> None:
         """Обновление таблицы результатов"""
         try:
             self.results_table.setRowCount(0)
             
             # Сортируем по количеству транзакций
-            sorted_senders = sorted(counter.items(), key=lambda x: x[1], reverse=True)
+            sorted_senders: List[Tuple[str, int]] = sorted(counter.items(), key=lambda x: x[1], reverse=True)
             
             for sender, count in sorted_senders:
                 row = self.results_table.rowCount()
@@ -537,16 +534,16 @@ class AnalysisTab(BaseTab):
                 
                 # Считаем общую сумму
                 if sender in details:
-                    total_sum = sum(tx['value'] for tx in details[sender])
+                    total_sum = float(sum(float(tx.get('value', 0)) for tx in details[sender]))
                     self.results_table.setItem(row, 2, QTableWidgetItem(f"{total_sum:.4f}"))
                     
                     # Первая транзакция
-                    first_tx = min(details[sender], key=lambda x: x['timestamp'])
+                    first_tx = min(details[sender], key=lambda x: float(x.get('timestamp', 0)))
                     first_date = datetime.fromtimestamp(int(first_tx['timestamp'])).strftime('%Y-%m-%d')
                     self.results_table.setItem(row, 3, QTableWidgetItem(first_date))
                     
                     # Последняя транзакция
-                    last_tx = max(details[sender], key=lambda x: x['timestamp'])
+                    last_tx = max(details[sender], key=lambda x: float(x.get('timestamp', 0)))
                     last_date = datetime.fromtimestamp(int(last_tx['timestamp'])).strftime('%Y-%m-%d')
                     self.results_table.setItem(row, 4, QTableWidgetItem(last_date))
                 
@@ -573,7 +570,7 @@ class AnalysisTab(BaseTab):
         self.progress_bar.setValue(100)
         self.log("Анализ завершен", "SUCCESS")
     
-    def _show_context_menu(self, position):
+    def _show_context_menu(self, position: QPoint) -> None:
         """Показ контекстного меню для таблицы"""
         if self.results_table.currentRow() < 0:
             return
@@ -588,7 +585,8 @@ class AnalysisTab(BaseTab):
         
         if action:
             row = self.results_table.currentRow()
-            address = self.results_table.item(row, 0).text()
+            item = self.results_table.item(row, 0)
+            address = item.text() if item is not None else ""
             
             if action == copy_address:
                 QApplication.clipboard().setText(address)

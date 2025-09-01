@@ -1,7 +1,9 @@
 """Web3 Provider for BSC network"""
 
-from typing import Optional
+from typing import Optional, Dict, Union
 from web3 import Web3
+from web3.types import TxReceipt
+from hexbytes import HexBytes
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,7 +18,7 @@ class Web3Provider:
             'https://bsc-dataseed1.ninicoin.io/'
         ]
         # Сетевые параметры, ожидаемые сервисами
-        self.network_config = {
+        self.network_config: Dict[str, Union[int, str]] = {
             'chain_id': 56,
             'symbol': 'BNB',
         }
@@ -56,7 +58,7 @@ class Web3Provider:
         """Получить объект Web3"""
         return self.w3
     
-    def wait_for_transaction_receipt(self, tx_hash: str, timeout: int = 300):
+    def wait_for_transaction_receipt(self, tx_hash: Union[str, bytes, HexBytes], timeout: int = 300) -> Optional[TxReceipt]:
         """Ожидание квитанции по транзакции с таймаутом.
 
         Возвращает Receipt или None при ошибке/таймауте.
@@ -65,7 +67,15 @@ class Web3Provider:
             if not self.w3:
                 return None
             # web3.py вернёт исключение по таймауту, перехватываем и возвращаем None
-            return self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
+            # Приводим к bytes (HexBytes совместим с bytes) для строгой типизации
+            if isinstance(tx_hash, str):
+                # Ожидаем строку вида '0x...'
+                h: HexBytes = HexBytes(tx_hash)
+            elif isinstance(tx_hash, (bytes, bytearray, memoryview)):
+                h = HexBytes(tx_hash)
+            else:
+                h = tx_hash
+            return self.w3.eth.wait_for_transaction_receipt(h, timeout=timeout)
         except Exception as e:
             logger.error(f"Ошибка ожидания квитанции: {e}")
             return None

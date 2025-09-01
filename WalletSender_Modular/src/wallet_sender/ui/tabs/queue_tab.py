@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import Enum
 
 from PyQt5.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
+    QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit, QWidget,
     QPushButton, QTableWidget, QTableWidgetItem, QProgressBar,
     QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QHeaderView,
     QAbstractItemView, QMessageBox, QMenu, QApplication,
@@ -20,7 +20,7 @@ from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer
 from PyQt5.QtGui import QColor
 
 from .base_tab import BaseTab
-from ...database.database import DatabaseManager
+from ...database.database import Database
 from ...utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -60,7 +60,7 @@ class QueueTab(BaseTab):
         super().__init__(main_window, parent)
         
         # Инициализация
-        self.database = DatabaseManager()
+        self.database = Database()
         self.task_queue = []
         self.current_task = None
         self.is_processing = False
