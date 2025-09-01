@@ -60,9 +60,11 @@ class HistoryTab(BaseTab):
     """Вкладка истории операций"""
     
     def __init__(self, main_window, parent=None):
-        super().__init__(main_window, parent)
+        # Важно: создать менеджер БД до вызова BaseTab.__init__,
+        # т.к. BaseTab вызывает init_ui(), где используется db_manager (load_history)
         self.db_manager = Database()
         self.status_checker = None
+        super().__init__(main_window, parent)
         
     def init_ui(self):
         """Инициализация интерфейса"""
