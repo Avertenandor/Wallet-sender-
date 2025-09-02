@@ -1,488 +1,200 @@
-"""BSCScan/Etherscan API Service для поиска и анализа транзакций"""
+"""
+BSCScan/Etherscan API Service - единый сервис для работы с API через rate limiter и BscScanClient
+"""
 
-import aiohttp
 import asyncio
-import json
 from typing import Dict, List, Any, Optional
 from datetime import datetime
-import time
 import logging
+
+from ..core.api import BscScanClient, ApiKeyPool, get_bscscan_client
+from ..core.limiter import ApiRateLimiter, RateLimitConfig, get_rate_limiter
+from ..config import get_config
 
 logger = logging.getLogger(__name__)
 
 
-class BSCScanService:
-    """Сервис для работы с Etherscan V2 API (для BSC)"""
+class BscScanService:
+    """Единый сервис для работы с BSCScan/Etherscan API"""
     
-    # Etherscan V2 API endpoints
-    BASE_URL = "https://api.etherscan.io/v2/api"
-    BSC_CHAIN_ID = 56
-    
-    def __init__(self, api_keys: List[str]):
-        """
-        Инициализация сервиса
+    def __init__(self):
+        """Инициализация сервиса"""
+        config = get_config()
         
-        Args:
-            api_keys: Список Etherscan API ключей для ротации
-        """
-        self.api_keys = api_keys if api_keys else []
-        self.current_key_index = 0
-        self.last_request_time = {}  # Для ограничения частоты запросов
-        self.rate_limit = 5  # Запросов в секунду на ключ
+        # Получаем ключи из конфига - пробуем разные варианты
+        # 1. Новый формат в секции api
+        self.api_keys = config.get('api.bscscan_api_keys', [])
+        
+        # 2. Etherscan keys (текущий стандарт для V2 API)
+        if not self.api_keys:
+            self.api_keys = config.get('etherscan_api_keys', [])
+        
+        # 3. Legacy формат
+        if not self.api_keys:
+            self.api_keys = config.get('bscscan_api_keys', [])
         
         if not self.api_keys:
-            logger.warning("No Etherscan API keys provided. Please add keys in config.")
+            logger.warning("No API keys found in config. Please add etherscan_api_keys or api.bscscan_api_keys.")
         
-    def _get_next_api_key(self) -> str:
-        """Получение следующего API ключа с ротацией"""
-        if not self.api_keys:
-            raise ValueError("Нет доступных API ключей. Добавьте Etherscan API ключи в конфигурацию.")
+        # Настраиваем rate limiter
+        rate_config = config.get('api', {}).get('rate_limit', {})
+        self.rate_limit_config = RateLimitConfig(
+            per_key_rps=rate_config.get('per_key_rps', 4.0),
+            global_rps=rate_config.get('global_rps', 8.0),
+            burst_size=rate_config.get('burst_size', 10),
+            backoff_ms=rate_config.get('backoff_ms', [500, 1000, 2000]),
+            request_timeout_s=rate_config.get('request_timeout_s', 10.0)
+        )
         
-        key = self.api_keys[self.current_key_index]
-        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-        return key
+        # Инициализируем компоненты
+        self.limiter = get_rate_limiter(self.rate_limit_config)
+        self.key_pool = ApiKeyPool(keys=self.api_keys) if self.api_keys else None
+        self.client: Optional[BscScanClient] = None
+        self._client_lock = asyncio.Lock()
     
-    async def _make_request(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Выполнение асинхронного запроса к Etherscan V2 API
-        
-        Args:
-            params: Параметры запроса
+    async def _get_client(self) -> BscScanClient:
+        """Получение или создание клиента"""
+        async with self._client_lock:
+            if self.client is None:
+                # Создаем сессию
+                import aiohttp
+                session = aiohttp.ClientSession()
+                
+                # Создаем клиент
+                self.client = BscScanClient(
+                    session=session,
+                    limiter=self.limiter,
+                    key_pool=self.key_pool,
+                    use_v2=True
+                )
             
-        Returns:
-            Ответ API в виде словаря
-        """
-        api_key = self._get_next_api_key()
-        params['apikey'] = api_key
-        params['chainid'] = self.BSC_CHAIN_ID  # Обязательный параметр для V2 API
-        
-        # Ограничение частоты запросов
-        current_time = time.time()
-        if api_key in self.last_request_time:
-            time_since_last = current_time - self.last_request_time[api_key]
-            if time_since_last < 1 / self.rate_limit:
-                await asyncio.sleep(1 / self.rate_limit - time_since_last)
-        
-        self.last_request_time[api_key] = time.time()
-        
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(self.BASE_URL, params=params, timeout=30) as response:
-                    data = await response.json()
-                    
-                    # Проверка на ошибку миграции
-                    if data.get('status') == '0':
-                        error_msg = data.get('message', '').lower()
-                        if 'migrate' in error_msg or 'v2' in error_msg:
-                            logger.error("BSCScan V1 API is deprecated. Already using V2 API.")
-                        elif 'rate limit' in data.get('result', '').lower():
-                            # Если достигнут лимит, ждем и пробуем другой ключ
-                            await asyncio.sleep(1)
-                            return await self._make_request(params)
-                    
-                    return data
-                    
-            except asyncio.TimeoutError:
-                return {'status': '0', 'message': 'Request timeout', 'result': []}
-            except Exception as e:
-                logger.error(f"API request error: {e}")
-                return {'status': '0', 'message': str(e), 'result': []}
+            return self.client
     
-    async def get_token_transfers(
-        self, 
-        address: str, 
-        contract_address: Optional[str] = None,
-        start_block: int = 0,
-        end_block: int = 99999999,
-        page: int = 1,
-        offset: int = 100,
-        sort: str = 'desc'
-    ) -> List[Dict[str, Any]]:
+    async def get_transactions(self, 
+                              address: str, 
+                              token_address: Optional[str] = None,
+                              start_block: int = 0,
+                              end_block: int = 999999999,
+                              page: int = 1,
+                              offset: int = 100,
+                              sort: str = 'desc') -> List[Dict[str, Any]]:
         """
-        Получение токен-трансферов для адреса
+        Получение транзакций для адреса
         
         Args:
             address: Адрес кошелька
-            contract_address: Адрес контракта токена (опционально)
+            token_address: Адрес токена (None для обычных транзакций)
             start_block: Начальный блок
             end_block: Конечный блок
-            page: Номер страницы
-            offset: Количество записей на странице
-            sort: Сортировка (asc/desc)
+            page: Страница результатов
+            offset: Количество результатов
+            sort: Сортировка
             
         Returns:
             Список транзакций
         """
-        params = {
-            'module': 'account',
-            'action': 'tokentx',
-            'address': address,
-            'startblock': start_block,
-            'endblock': end_block,
-            'page': page,
-            'offset': offset,
-            'sort': sort
-        }
+        client = await self._get_client()
         
-        if contract_address:
-            params['contractaddress'] = contract_address
-        
-        result = await self._make_request(params)
-        
-        if result.get('status') == '1':
-            return result.get('result', [])
-        return []
+        try:
+            if token_address:
+                # Токеновые транзакции
+                return await client.get_token_transfers(
+                    address=address,
+                    contract_address=token_address,
+                    start_block=start_block,
+                    end_block=end_block,
+                    page=page,
+                    offset=offset,
+                    sort=sort
+                )
+            else:
+                # Обычные транзакции
+                response = await client.get(
+                    module='account',
+                    action='txlist',
+                    params={
+                        'address': address,
+                        'startblock': start_block,
+                        'endblock': end_block,
+                        'page': page,
+                        'offset': offset,
+                        'sort': sort
+                    }
+                )
+                return response.get('result', [])
+                
+        except Exception as e:
+            logger.error(f"Error getting transactions: {e}")
+            return []
     
-    async def get_normal_transactions(
-        self,
-        address: str,
-        start_block: int = 0,
-        end_block: int = 99999999,
-        page: int = 1,
-        offset: int = 100,
-        sort: str = 'desc'
-    ) -> List[Dict[str, Any]]:
-        """
-        Получение обычных транзакций для адреса
-        
-        Args:
-            address: Адрес кошелька
-            start_block: Начальный блок
-            end_block: Конечный блок
-            page: Номер страницы
-            offset: Количество записей на странице
-            sort: Сортировка (asc/desc)
-            
-        Returns:
-            Список транзакций
-        """
-        params = {
-            'module': 'account',
-            'action': 'txlist',
-            'address': address,
-            'startblock': start_block,
-            'endblock': end_block,
-            'page': page,
-            'offset': offset,
-            'sort': sort
-        }
-        
-        result = await self._make_request(params)
-        
-        if result.get('status') == '1':
-            return result.get('result', [])
-        return []
-    
-    async def get_token_balance(
-        self,
-        address: str,
-        contract_address: str,
-        tag: str = 'latest'
-    ) -> int:
+    async def get_token_balance(self, 
+                              address: str, 
+                              contract_address: str) -> int:
         """
         Получение баланса токена
         
         Args:
             address: Адрес кошелька
             contract_address: Адрес контракта токена
-            tag: Тег блока (latest, earliest, pending)
             
         Returns:
-            Баланс в Wei
+            Баланс в wei
         """
-        params = {
-            'module': 'account',
-            'action': 'tokenbalance',
-            'contractaddress': contract_address,
-            'address': address,
-            'tag': tag
-        }
+        client = await self._get_client()
         
-        result = await self._make_request(params)
-        
-        if result.get('status') == '1':
-            return int(result.get('result', '0'))
-        return 0
+        try:
+            response = await client.get(
+                module='account',
+                action='tokenbalance',
+                params={
+                    'contractaddress': contract_address,
+                    'address': address,
+                    'tag': 'latest'
+                }
+            )
+            return int(response.get('result', '0'))
+            
+        except Exception as e:
+            logger.error(f"Error getting token balance: {e}")
+            return 0
     
-    async def get_bnb_balance(
-        self,
-        address: str,
-        tag: str = 'latest'
-    ) -> int:
+    async def get_bnb_balance(self, address: str) -> int:
         """
         Получение баланса BNB
         
         Args:
             address: Адрес кошелька
-            tag: Тег блока (latest, earliest, pending)
             
         Returns:
-            Баланс в Wei
+            Баланс в wei
         """
-        params = {
-            'module': 'account',
-            'action': 'balance',
-            'address': address,
-            'tag': tag
-        }
+        client = await self._get_client()
         
-        result = await self._make_request(params)
-        
-        if result.get('status') == '1':
-            return int(result.get('result', '0'))
-        return 0
-    
-    async def get_token_holders(
-        self,
-        contract_address: str,
-        page: int = 1,
-        offset: int = 100
-    ) -> List[Dict[str, Any]]:
-        """
-        Получение списка держателей токена (V2 API feature)
-        
-        Args:
-            contract_address: Адрес контракта токена
-            page: Номер страницы
-            offset: Количество записей на странице
+        try:
+            response = await client.get(
+                module='account',
+                action='balance',
+                params={
+                    'address': address,
+                    'tag': 'latest'
+                }
+            )
+            return int(response.get('result', '0'))
             
-        Returns:
-            Список держателей
-        """
-        params = {
-            'module': 'token',
-            'action': 'tokenholderlist',
-            'contractaddress': contract_address,
-            'page': page,
-            'offset': offset
-        }
-        
-        result = await self._make_request(params)
-        
-        if result.get('status') == '1':
-            return result.get('result', [])
-        return []
+        except Exception as e:
+            logger.error(f"Error getting BNB balance: {e}")
+            return 0
     
-    async def get_token_info(self, contract_address: str) -> Optional[Dict[str, Any]]:
+    async def search_txs(self,
+                        address: str,
+                        token_filter: Optional[str] = None,
+                        amount_min: Optional[float] = None,
+                        amount_max: Optional[float] = None,
+                        date_from: Optional[datetime] = None,
+                        date_to: Optional[datetime] = None,
+                        limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Получение информации о токене (V2 API feature)
-        
-        Args:
-            contract_address: Адрес контракта токена
-            
-        Returns:
-            Информация о токене
-        """
-        params = {
-            'module': 'token',
-            'action': 'tokeninfo',
-            'contractaddress': contract_address
-        }
-        
-        result = await self._make_request(params)
-        
-        if result.get('status') == '1' and result.get('result'):
-            return result.get('result')
-        return None
-    
-    async def get_transaction_by_hash(
-        self,
-        tx_hash: str
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Получение информации о транзакции по хешу
-        
-        Args:
-            tx_hash: Хеш транзакции
-            
-        Returns:
-            Информация о транзакции
-        """
-        params = {
-            'module': 'proxy',
-            'action': 'eth_getTransactionByHash',
-            'txhash': tx_hash
-        }
-        
-        result = await self._make_request(params)
-        
-        if result.get('result'):
-            return result.get('result')
-        return None
-    
-    async def get_transaction_receipt(
-        self,
-        tx_hash: str
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Получение квитанции транзакции
-        
-        Args:
-            tx_hash: Хеш транзакции
-            
-        Returns:
-            Квитанция транзакции
-        """
-        params = {
-            'module': 'proxy',
-            'action': 'eth_getTransactionReceipt',
-            'txhash': tx_hash
-        }
-        
-        result = await self._make_request(params)
-        
-        if result.get('result'):
-            return result.get('result')
-        return None
-    
-    async def get_block_number(self) -> int:
-        """
-        Получение текущего номера блока
-        
-        Returns:
-            Номер последнего блока
-        """
-        params = {
-            'module': 'proxy',
-            'action': 'eth_blockNumber'
-        }
-        
-        result = await self._make_request(params)
-        
-        if result.get('result'):
-            return int(result.get('result'), 16)
-        return 0
-    
-    async def get_gas_price(self) -> int:
-        """
-        Получение текущей цены газа
-        
-        Returns:
-            Цена газа в Wei
-        """
-        params = {
-            'module': 'proxy',
-            'action': 'eth_gasPrice'
-        }
-        
-        result = await self._make_request(params)
-        
-        if result.get('result'):
-            return int(result.get('result'), 16)
-        return 5000000000  # 5 Gwei по умолчанию
-    
-    async def get_block_by_timestamp(
-        self,
-        timestamp: int,
-        closest: str = 'before'
-    ) -> Optional[int]:
-        """
-        Получение номера блока по временной метке
-        
-        Args:
-            timestamp: Unix timestamp
-            closest: 'before' или 'after'
-            
-        Returns:
-            Номер блока
-        """
-        params = {
-            'module': 'block',
-            'action': 'getblocknobytime',
-            'timestamp': timestamp,
-            'closest': closest
-        }
-        
-        result = await self._make_request(params)
-        
-        if result.get('status') == '1':
-            return int(result.get('result', 0))
-        return None
-    
-    async def get_event_logs(
-        self,
-        from_block: int,
-        to_block: int,
-        address: Optional[str] = None,
-        topics: Optional[List[str]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Получение логов событий
-        
-        Args:
-            from_block: Начальный блок
-            to_block: Конечный блок
-            address: Адрес контракта (опционально)
-            topics: Список топиков для фильтрации (опционально)
-            
-        Returns:
-            Список логов
-        """
-        params = {
-            'module': 'logs',
-            'action': 'getLogs',
-            'fromBlock': from_block,
-            'toBlock': to_block
-        }
-        
-        if address:
-            params['address'] = address
-        
-        if topics:
-            for i, topic in enumerate(topics):
-                if topic:
-                    params[f'topic{i}'] = topic
-        
-        result = await self._make_request(params)
-        
-        if result.get('status') == '1':
-            return result.get('result', [])
-        return []
-    
-    def format_transaction(self, tx: Dict[str, Any], is_token: bool = False) -> Dict[str, Any]:
-        """
-        Форматирование транзакции для отображения
-        
-        Args:
-            tx: Данные транзакции
-            is_token: Является ли транзакция токеновой
-            
-        Returns:
-            Отформатированные данные
-        """
-        formatted = {
-            'hash': tx.get('hash', ''),
-            'from': tx.get('from', ''),
-            'to': tx.get('to', ''),
-            'value': tx.get('value', '0'),
-            'gas': tx.get('gas', '0'),
-            'gasPrice': tx.get('gasPrice', '0'),
-            'timestamp': datetime.fromtimestamp(int(tx.get('timeStamp', 0))).strftime('%Y-%m-%d %H:%M:%S') if tx.get('timeStamp') else '',
-            'blockNumber': tx.get('blockNumber', '0'),
-            'status': 'Success' if tx.get('isError', '0') == '0' else 'Failed'
-        }
-        
-        if is_token:
-            formatted['tokenName'] = tx.get('tokenName', '')
-            formatted['tokenSymbol'] = tx.get('tokenSymbol', '')
-            formatted['tokenDecimal'] = tx.get('tokenDecimal', '18')
-            formatted['contractAddress'] = tx.get('contractAddress', '')
-        
-        return formatted
-    
-    async def search_transactions(
-        self,
-        address: str,
-        token_filter: Optional[str] = None,
-        amount_min: Optional[float] = None,
-        amount_max: Optional[float] = None,
-        date_from: Optional[datetime] = None,
-        date_to: Optional[datetime] = None,
-        page: int = 1,
-        page_size: int = 50
-    ) -> Dict[str, Any]:
-        """
-        Расширенный поиск транзакций с фильтрацией
+        Поиск транзакций с фильтрацией
         
         Args:
             address: Адрес для поиска
@@ -491,70 +203,215 @@ class BSCScanService:
             amount_max: Максимальная сумма
             date_from: Начальная дата
             date_to: Конечная дата
-            page: Номер страницы
-            page_size: Размер страницы
+            limit: Максимальное количество результатов
             
         Returns:
-            Результаты поиска с метаданными
+            Список отфильтрованных транзакций
         """
+        # Преобразуем даты в блоки если указаны
+        start_block = 0
+        end_block = 999999999
+        
+        client = await self._get_client()
+        
+        if date_from:
+            timestamp = int(date_from.timestamp())
+            start_block = await client.get_block_by_timestamp(timestamp, 'after')
+        
+        if date_to:
+            timestamp = int(date_to.timestamp())
+            end_block = await client.get_block_by_timestamp(timestamp, 'before')
+        
         # Получаем транзакции
         if token_filter and token_filter != 'ALL':
-            transactions = await self.get_token_transfers(
+            transactions = await client.get_token_transfers(
                 address=address,
                 contract_address=token_filter,
-                page=page,
-                offset=page_size
+                start_block=start_block,
+                end_block=end_block,
+                offset=min(limit, 10000)
             )
-            is_token = True
         else:
-            # Получаем обычные и токеновые транзакции
-            normal_txs = await self.get_normal_transactions(
-                address=address,
-                page=page,
-                offset=page_size
-            )
-            token_txs = await self.get_token_transfers(
-                address=address,
-                page=page,
-                offset=page_size
+            # Получаем обе категории транзакций
+            normal_txs_task = client.get(
+                module='account',
+                action='txlist',
+                params={
+                    'address': address,
+                    'startblock': start_block,
+                    'endblock': end_block,
+                    'offset': min(limit, 10000),
+                    'sort': 'desc'
+                }
             )
             
-            # Объединяем и сортируем по времени
+            token_txs_task = client.get_token_transfers(
+                address=address,
+                start_block=start_block,
+                end_block=end_block,
+                offset=min(limit, 10000)
+            )
+            
+            # Выполняем параллельно
+            normal_response, token_txs = await asyncio.gather(
+                normal_txs_task, token_txs_task
+            )
+            
+            normal_txs = normal_response.get('result', [])
+            
+            # Объединяем и сортируем
             transactions = normal_txs + token_txs
             transactions.sort(key=lambda x: int(x.get('timeStamp', 0)), reverse=True)
-            is_token = False
         
-        # Применяем фильтры
-        filtered = []
-        for tx in transactions:
-            # Фильтр по дате
-            if date_from or date_to:
-                tx_time = datetime.fromtimestamp(int(tx.get('timeStamp', 0)))
-                if date_from and tx_time < date_from:
-                    continue
-                if date_to and tx_time > date_to:
-                    continue
-            
-            # Фильтр по сумме
-            if amount_min or amount_max:
-                value = float(tx.get('value', '0')) / (10 ** int(tx.get('tokenDecimal', 18)))
+        # Применяем фильтры по сумме
+        if amount_min is not None or amount_max is not None:
+            filtered = []
+            for tx in transactions:
+                # Получаем decimals (по умолчанию 18)
+                decimals = int(tx.get('tokenDecimal', 18))
+                value = float(tx.get('value', '0')) / (10 ** decimals)
+                
                 if amount_min and value < amount_min:
                     continue
                 if amount_max and value > amount_max:
                     continue
+                
+                filtered.append(tx)
             
-            filtered.append(self.format_transaction(tx, is_token))
+            transactions = filtered
         
-        # Пагинация
-        total_count = len(filtered)
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        paginated = filtered[start_idx:end_idx]
+        # Ограничиваем количество результатов
+        return transactions[:limit]
+    
+    async def get_token_holders(self, 
+                              contract_address: str,
+                              limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Получение списка держателей токена
         
-        return {
-            'transactions': paginated,
-            'total': total_count,
-            'page': page,
-            'page_size': page_size,
-            'total_pages': (total_count + page_size - 1) // page_size
+        Args:
+            contract_address: Адрес контракта токена
+            limit: Максимальное количество результатов
+            
+        Returns:
+            Список держателей
+        """
+        client = await self._get_client()
+        
+        try:
+            return await client.get_token_holders(
+                contract_address=contract_address,
+                offset=limit
+            )
+        except Exception as e:
+            logger.error(f"Error getting token holders: {e}")
+            return []
+    
+    async def get_token_info(self, contract_address: str) -> Dict[str, Any]:
+        """
+        Получение информации о токене
+        
+        Args:
+            contract_address: Адрес контракта токена
+            
+        Returns:
+            Информация о токене
+        """
+        client = await self._get_client()
+        
+        try:
+            return await client.get_token_info(contract_address)
+        except Exception as e:
+            logger.error(f"Error getting token info: {e}")
+            return {}
+    
+    async def get_event_logs(self,
+                           address: str,
+                           from_block: int,
+                           to_block: int,
+                           topic0: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Получение event logs
+        
+        Args:
+            address: Адрес контракта
+            from_block: Начальный блок
+            to_block: Конечный блок
+            topic0: Topic фильтр
+            
+        Returns:
+            Список логов
+        """
+        client = await self._get_client()
+        
+        try:
+            return await client.get_event_logs(
+                address=address,
+                from_block=from_block,
+                to_block=to_block,
+                topic0=topic0
+            )
+        except Exception as e:
+            logger.error(f"Error getting event logs: {e}")
+            return []
+    
+    async def get_latest_block(self) -> int:
+        """
+        Получение последнего номера блока
+        
+        Returns:
+            Номер блока
+        """
+        client = await self._get_client()
+        
+        try:
+            return await client.get_latest_block()
+        except Exception as e:
+            logger.error(f"Error getting latest block: {e}")
+            return 0
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Получение статистики сервиса
+        
+        Returns:
+            Статистика
+        """
+        stats = {
+            'api_keys_count': len(self.api_keys),
+            'rate_limiter': self.limiter.get_stats(),
         }
+        
+        if self.client:
+            stats['client'] = self.client.get_stats()
+        
+        return stats
+    
+    async def close(self):
+        """Закрытие сервиса и освобождение ресурсов"""
+        if self.client and self.client.session:
+            await self.client.session.close()
+        self.client = None
+
+
+# Глобальный экземпляр сервиса
+_global_service: Optional[BscScanService] = None
+
+
+def get_bscscan_service() -> BscScanService:
+    """Получение глобального экземпляра сервиса"""
+    global _global_service
+    
+    if _global_service is None:
+        _global_service = BscScanService()
+    
+    return _global_service
+
+
+async def close_bscscan_service():
+    """Закрытие глобального сервиса"""
+    global _global_service
+    
+    if _global_service:
+        await _global_service.close()
+        _global_service = None

@@ -24,6 +24,7 @@ import csv
 from .base_tab import BaseTab
 from ...core.wallet_manager import WalletManager
 from ...services.token_service import TokenService
+from ...services.job_router import get_job_router
 from ...constants import PLEX_CONTRACT, USDT_CONTRACT
 from ...database.database import Database
 from ...utils.logger import get_logger
@@ -47,13 +48,20 @@ class RewardsTab(BaseTab):
         self.wallet_sender = None
         self.token_service = None
         self.database = Database()
+        self.job_router = get_job_router()
+        self.current_job_id = None
+        self.current_job_tag = None
 
         # Переменные состояния
         self.rewards_list = []
         self.selected_rewards = []
         self.is_sending = False
-        self.stop_sending_event = threading.Event()
         self.rewards_configs = {}
+        
+        # Регистрируем колбеки для событий задач
+        self.job_router.register_callback('job_progress', self._on_job_progress)
+        self.job_router.register_callback('job_completed', self._on_job_completed)
+        self.job_router.register_callback('job_failed', self._on_job_failed)
 
         # Подключение сигналов
         self.update_rewards_signal.connect(self._update_rewards_table)
@@ -672,19 +680,21 @@ class RewardsTab(BaseTab):
             self.log("Список наград очищен", "INFO")
             
     def start_sending_rewards(self):
-        """Начать отправку наград"""
+        """Начать отправку наград через JobRouter"""
         if self.is_sending:
             QMessageBox.warning(self, "Предупреждение", "Отправка уже запущена!")
             return
             
         # Собираем выбранные награды
-        selected = []
+        selected_rewards = []
         for i in range(self.rewards_table.rowCount()):
             if self.rewards_table.item(i, 0).checkState() == Qt.Checked:
-                if self.rewards_list[i]['status'] != 'Sent':
-                    selected.append((i, self.rewards_list[i]))
+                if i < len(self.rewards_list) and self.rewards_list[i]['status'] != 'Sent':
+                    reward = self.rewards_list[i].copy()
+                    reward['row_index'] = i  # Сохраняем индекс строки
+                    selected_rewards.append(reward)
                     
-        if not selected:
+        if not selected_rewards:
             QMessageBox.warning(self, "Предупреждение", "Выберите награды для отправки!")
             return
             
@@ -697,7 +707,7 @@ class RewardsTab(BaseTab):
         reply = QMessageBox.question(
             self,
             "Подтверждение отправки",
-            f"Отправить {len(selected)} наград?\n\n"
+            f"Отправить {len(selected_rewards)} наград?\n\n"
             f"Токен: {self.reward_token_combo.currentText()}\n"
             f"Газ: {self.gas_price.value()} Gwei",
             QMessageBox.Yes | QMessageBox.No,
@@ -707,106 +717,137 @@ class RewardsTab(BaseTab):
         if reply != QMessageBox.Yes:
             return
             
-        # Запуск отправки
-        self.is_sending = True
-        self.stop_sending_event.clear()
-        self.selected_rewards = selected
+        # Определяем токен
+        token_name = self.reward_token_combo.currentText()
+        if token_name == 'PLEX ONE':
+            token_address = PLEX_CONTRACT
+        elif token_name == 'USDT':
+            token_address = USDT_CONTRACT
+        else:
+            token_address = 'BNB'
         
-        # Обновление UI
-        self.send_rewards_btn.setEnabled(False)
-        self.stop_sending_btn.setEnabled(True)
-        self.sending_progress.setValue(0)
+        # Формируем конфигурацию для JobRouter
+        rewards_config = {
+            'rewards': selected_rewards,
+            'token_address': token_address,
+            'token_name': token_name,
+            'gas_price': self.gas_price.value(),
+            'gas_limit': self.gas_limit.value(),
+            'delay_between_tx': self.send_delay.value(),
+            'use_percentage': self.use_percentage.isChecked(),
+            'percentage_amount': self.percentage_amount.value() if self.use_percentage.isChecked() else None,
+            'fixed_amount': self.reward_amount.value() if not self.use_percentage.isChecked() else None
+        }
         
-        # Запуск потока
-        thread = threading.Thread(
-            target=self._sending_worker,
-            daemon=True
-        )
-        thread.start()
+        # Создаем тег для задачи
+        from datetime import datetime
+        self.current_job_tag = f"rewards_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
-        self.log(f"🚀 Начата отправка {len(selected)} наград", "SUCCESS")
-        
-    def stop_sending_rewards(self):
-        """Остановить отправку наград"""
-        if self.is_sending:
-            self.stop_sending_event.set()
-            self.log("⏹ Остановка отправки...", "WARNING")
-            
-    def _sending_worker(self):
-        """Рабочий поток отправки наград"""
         try:
-            total = len(self.selected_rewards)
-            sent = 0
-            failed = 0
+            # Отправляем задачу в JobRouter
+            self.current_job_id = self.job_router.submit_rewards(
+                rewards_config=rewards_config,
+                sender_key=self.wallet_manager.get_private_key(),
+                tag=self.current_job_tag,
+                priority=7  # Высокий приоритет для наград
+            )
             
-            for index, (row_index, reward) in enumerate(self.selected_rewards):
-                if self.stop_sending_event.is_set():
-                    self._log_operation("Отправка остановлена пользователем")
-                    break
-                    
-                # Обновляем прогресс
-                progress = int((index / total) * 100)
-                self.sending_progress_signal.emit(
-                    progress,
-                    f"Отправка {index + 1}/{total}"
-                )
-                
-                try:
-                    # Определяем токен
-                    token_name = reward['token']
-                    if token_name == 'PLEX ONE':
-                        token_address = PLEX_CONTRACT
-                    elif token_name == 'USDT':
-                        token_address = USDT_CONTRACT
-                    else:
-                        token_address = None
-                        
-                    # Отправляем транзакцию
-                    if token_address:
-                        tx_hash = self.wallet_sender.send_token(
-                            to_address=reward['address'],
-                            amount=reward['amount'],
-                            token_address=token_address,
-                            gas_price=self.gas_price.value(),
-                            gas_limit=self.gas_limit.value()
-                        )
-                    else:
-                        tx_hash = self.wallet_sender.send_bnb(
-                            to_address=reward['address'],
-                            amount=reward['amount'],
-                            gas_price=self.gas_price.value()
-                        )
-                        
-                    if tx_hash:
-                        self.reward_sent_signal.emit(reward['address'], True, tx_hash)
-                        sent += 1
-                        self._log_operation(f"✅ Отправлено: {reward['address'][:8]}...{reward['address'][-6:]} - TX: {tx_hash[:10]}...")
-                    else:
-                        self.reward_sent_signal.emit(reward['address'], False, "")
-                        failed += 1
-                        self._log_operation(f"❌ Ошибка отправки: {reward['address'][:8]}...{reward['address'][-6:]}")
-                        
-                except Exception as e:
-                    logger.error(f"Ошибка отправки награды: {e}")
-                    self.reward_sent_signal.emit(reward['address'], False, "")
-                    failed += 1
-                    self._log_operation(f"❌ Ошибка: {str(e)}")
-                    
-                # Задержка между отправками
-                if index < total - 1:
-                    time.sleep(self.send_delay.value())
-                    
-            # Завершение
-            self.sending_progress_signal.emit(100, f"Завершено: {sent} успешно, {failed} ошибок")
-            self._log_operation(f"🏁 Отправка завершена: {sent} успешно, {failed} ошибок")
+            # Обновляем состояние
+            self.is_sending = True
+            self.selected_rewards = selected_rewards
+            
+            # Обновляем UI
+            self.send_rewards_btn.setEnabled(False)
+            self.stop_sending_btn.setEnabled(True)
+            self.sending_progress.setValue(0)
+            
+            self.log(f"🚀 Задача отправки {len(selected_rewards)} наград добавлена в очередь (ID: {self.current_job_id})", "SUCCESS")
+            
+            # Запускаем таймер для обновления статуса
+            self.update_timer = QTimer()
+            self.update_timer.timeout.connect(self._update_job_status)
+            self.update_timer.start(1000)  # Обновляем каждую секунду
             
         except Exception as e:
-            logger.error(f"Критическая ошибка в потоке отправки: {e}")
-            self._log_operation(f"❌ Критическая ошибка: {str(e)}")
-            
-        finally:
+            logger.error(f"Ошибка отправки задачи наград: {e}")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать задачу: {str(e)}")
             self.is_sending = False
-            QTimer.singleShot(0, self._on_sending_finished)
+        
+    def stop_sending_rewards(self):
+        """Остановить отправку наград через JobRouter"""
+        if self.is_sending and self.current_job_id:
+            try:
+                if self.job_router.cancel_job(self.current_job_id):
+                    self.log(f"⏹ Задача #{self.current_job_id} отменена", "WARNING")
+                    self._on_sending_finished()
+                else:
+                    self.log("Не удалось отменить задачу", "ERROR")
+            except Exception as e:
+                logger.error(f"Ошибка отмены задачи: {e}")
+                self.log(f"Ошибка отмены: {str(e)}", "ERROR")
+            
+    def _update_job_status(self):
+        """Обновление статуса текущей задачи"""
+        if not self.current_job_id:
+            return
+            
+        try:
+            progress = self.job_router.get_progress(self.current_job_id)
+            if progress:
+                # Обновляем прогресс-бар
+                if progress['total'] > 0:
+                    percent = int((progress['done'] / progress['total']) * 100)
+                    self.sending_progress.setValue(percent)
+                    self.sending_status.setText(
+                        f"Отправлено {progress['done']}/{progress['total']} (Ошибок: {progress['failed']})"
+                    )
+                
+                # Проверяем завершение
+                if progress['is_completed']:
+                    self.update_timer.stop()
+                    self._on_sending_finished()
+                    
+        except Exception as e:
+            logger.error(f"Ошибка обновления статуса задачи: {e}")
+    
+    def _on_job_progress(self, job_id: int, progress: Dict):
+        """Колбек прогресса задачи"""
+        if job_id != self.current_job_id:
+            return
+            
+        # Обновляем UI через сигнал
+        if progress['total'] > 0:
+            percent = int((progress['done'] / progress['total']) * 100)
+            message = f"Отправлено {progress['done']}/{progress['total']}"
+            self.sending_progress_signal.emit(percent, message)
+    
+    def _on_job_completed(self, job_id: int):
+        """Колбек завершения задачи"""
+        if job_id != self.current_job_id:
+            return
+            
+        self._log_operation("🏁 Отправка наград завершена успешно")
+        self.sending_progress_signal.emit(100, "Завершено")
+        
+        # Обновляем статусы наград в таблице
+        for reward in self.selected_rewards:
+            if 'row_index' in reward:
+                row = reward['row_index']
+                if row < self.rewards_table.rowCount():
+                    status_item = self.rewards_table.item(row, 6)
+                    status_item.setText('Sent')
+                    status_item.setBackground(QColor('#004400'))
+        
+        self._on_sending_finished()
+    
+    def _on_job_failed(self, job_id: int):
+        """Колбек ошибки задачи"""
+        if job_id != self.current_job_id:
+            return
+            
+        self._log_operation("❌ Отправка наград завершилась с ошибкой")
+        self.sending_progress_signal.emit(100, "Ошибка")
+        self._on_sending_finished()
             
     def _log_operation(self, message: str):
         """Логирование операции"""
@@ -850,8 +891,23 @@ class RewardsTab(BaseTab):
         
     def _on_sending_finished(self):
         """Обработка завершения отправки"""
+        # Останавливаем таймер если он работает
+        if hasattr(self, 'update_timer') and self.update_timer.isActive():
+            self.update_timer.stop()
+        
+        # Обновляем состояние
+        self.is_sending = False
+        self.current_job_id = None
+        self.current_job_tag = None
+        self.selected_rewards = []
+        
+        # Обновляем UI
         self.send_rewards_btn.setEnabled(True)
         self.stop_sending_btn.setEnabled(False)
+        
+        # Обновляем статистику
+        self._update_statistics()
+        
         self.log("Отправка наград завершена", "SUCCESS")
         
     def _show_context_menu(self, position):

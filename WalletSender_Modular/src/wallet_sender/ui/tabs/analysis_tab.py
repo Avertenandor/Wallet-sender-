@@ -4,6 +4,7 @@
 
 import threading
 import time
+import asyncio
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 from datetime import datetime
 
@@ -18,14 +19,15 @@ from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer, QUrl, QPoint
 from PyQt5.QtGui import QColor, QDesktopServices
 
 from web3 import Web3
-import requests
 
 from .base_tab import BaseTab
 if TYPE_CHECKING:  # only for type checkers
     from ...core.web3_provider import Web3Provider
     from ...services.token_service import TokenService
-from ...constants import PLEX_CONTRACT, USDT_CONTRACT, BSCSCAN_URL, BSCSCAN_KEYS
+from ...constants import PLEX_CONTRACT, USDT_CONTRACT
 from ...utils.logger import get_logger
+from ...services.bscscan_service import get_bscscan_service
+from ...config import get_config
 
 logger = get_logger(__name__)
 
@@ -45,7 +47,8 @@ class AnalysisTab(BaseTab):
         self.is_searching: bool = False
         self.stop_search_event: threading.Event = threading.Event()
         self.search_thread: Optional[threading.Thread] = None
-        self.current_api_key_index: int = 0
+        self.bscscan_service = get_bscscan_service()
+        self.config = get_config()
         # Подключение сигналов
         self.update_table_signal.connect(self._update_search_results)  # type: ignore
         self.search_finished_signal.connect(self._on_search_finished)  # type: ignore
@@ -233,19 +236,19 @@ class AnalysisTab(BaseTab):
         group = QGroupBox("Настройки API")
         layout = QVBoxLayout(group)
         
-        # Отображение текущего ключа
-        key_layout = QHBoxLayout()
-        key_layout.addWidget(QLabel("Текущий API ключ:"))
+        # Отображение статуса API
+        status_layout = QHBoxLayout()
+        status_layout.addWidget(QLabel("Статус API:"))
         
-        self.current_key_label = QLabel("Не выбран")
-        self.current_key_label.setStyleSheet("font-family: monospace;")
-        key_layout.addWidget(self.current_key_label)
+        self.api_status_label = QLabel("Готов")
+        self.api_status_label.setStyleSheet("font-family: monospace; color: green;")
+        status_layout.addWidget(self.api_status_label)
         
-        self.rotate_key_btn = QPushButton("🔄 Сменить ключ")
-        self.rotate_key_btn.clicked.connect(self._rotate_api_key)
-        key_layout.addWidget(self.rotate_key_btn)
+        self.refresh_stats_btn = QPushButton("🔄 Обновить статистику")
+        self.refresh_stats_btn.clicked.connect(self._update_api_stats)
+        status_layout.addWidget(self.refresh_stats_btn)
         
-        layout.addLayout(key_layout)
+        layout.addLayout(status_layout)
         
         # Статистика запросов
         stats_layout = QHBoxLayout()
@@ -260,8 +263,8 @@ class AnalysisTab(BaseTab):
         
         layout.addLayout(stats_layout)
         
-        # Обновление текущего ключа
-        self._update_current_key_display()
+        # Обновление статистики API
+        self._update_api_stats()
         
         return group
     
@@ -284,21 +287,30 @@ class AnalysisTab(BaseTab):
         """Обработка изменения выбранного токена"""
         self.custom_token_input.setEnabled(token == "Другой")
     
-    def _update_current_key_display(self):
-        """Обновление отображения текущего API ключа"""
-        if BSCSCAN_KEYS and self.current_api_key_index < len(BSCSCAN_KEYS):
-            key = BSCSCAN_KEYS[self.current_api_key_index]
-            masked_key = f"{key[:8]}...{key[-4:]}"
-            self.current_key_label.setText(masked_key)
-        else:
-            self.current_key_label.setText("Нет доступных ключей")
-    
-    def _rotate_api_key(self):
-        """Ротация API ключа"""
-        if BSCSCAN_KEYS:
-            self.current_api_key_index = (self.current_api_key_index + 1) % len(BSCSCAN_KEYS)
-            self._update_current_key_display()
-            self.log(f"API ключ изменен на #{self.current_api_key_index + 1}", "INFO")
+    def _update_api_stats(self):
+        """Обновление статистики API"""
+        try:
+            stats = self.bscscan_service.get_stats()
+            rate_limiter_stats = stats.get('rate_limiter', {})
+            
+            if rate_limiter_stats.get('is_blocked'):
+                self.api_status_label.setText("Блокирован")
+                self.api_status_label.setStyleSheet("font-family: monospace; color: red;")
+            else:
+                self.api_status_label.setText("Готов")
+                self.api_status_label.setStyleSheet("font-family: monospace; color: green;")
+            
+            # Обновляем статистику запросов
+            if hasattr(self, 'requests_label'):
+                total = rate_limiter_stats.get('total_requests', 0)
+                success = rate_limiter_stats.get('successful_requests', 0)
+                errors = rate_limiter_stats.get('failed_requests', 0)
+                
+                self.requests_label.setText(f"Запросов: {total}")
+                self.success_label.setText(f"Успешных: {success}")
+                self.errors_label.setText(f"Ошибок: {errors}")
+        except Exception as e:
+            logger.error(f"Ошибка обновления статистики API: {e}")
     
     def start_analysis(self):
         """Начать анализ транзакций"""
@@ -382,17 +394,26 @@ class AnalysisTab(BaseTab):
         try:
             self._log_to_search("Начинаем анализ транзакций...")
             
-            # Выполняем постраничный поиск
-            transactions, sender_counter, sender_details = self._search_transactions_paginated(
-                wallet_address=address,
-                token_contract=token_filter,
-                search_params=params
-            )
+            # Создаем событийный цикл для асинхронных запросов
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             
-            # Обновляем результаты в UI
-            self.update_table_signal.emit(transactions, sender_counter, sender_details)
-            
-            self._log_to_search(f"✅ Анализ завершен. Найдено {len(transactions)} транзакций")
+            try:
+                # Выполняем постраничный поиск
+                transactions, sender_counter, sender_details = loop.run_until_complete(
+                    self._search_transactions_async(
+                        wallet_address=address,
+                        token_contract=token_filter,
+                        search_params=params
+                    )
+                )
+                
+                # Обновляем результаты в UI
+                self.update_table_signal.emit(transactions, sender_counter, sender_details)
+                
+                self._log_to_search(f"✅ Анализ завершен. Найдено {len(transactions)} транзакций")
+            finally:
+                loop.close()
             
         except Exception as e:
             logger.error(f"Ошибка в потоке анализа: {e}")
@@ -400,13 +421,13 @@ class AnalysisTab(BaseTab):
         finally:
             self.search_finished_signal.emit()
     
-    def _search_transactions_paginated(
+    async def _search_transactions_async(
         self, 
         wallet_address: str, 
         token_contract: Optional[str],
         search_params: Dict[str, Any]
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int], Dict[str, List[Dict[str, Any]]]]:
-        """Постраничный поиск транзакций"""
+        """Асинхронный постраничный поиск транзакций через BscScanService"""
         
         matching_transactions: List[Dict[str, Any]] = []
         sender_counter: Dict[str, int] = {}
@@ -423,30 +444,16 @@ class AnalysisTab(BaseTab):
             
             self._log_to_search(f"Запрашиваем страницу {page}/{max_pages}...")
             
-            # Формируем параметры запроса
-            params_req: Dict[str, Any] = {
-                'module': 'account',
-                'action': 'tokentx',
-                'address': wallet_address,
-                'page': page,
-                'offset': 1000,
-                'sort': 'desc',
-                'apikey': BSCSCAN_KEYS[self.current_api_key_index] if BSCSCAN_KEYS else ''
-            }
-            
-            if token_contract:
-                params_req['contractaddress'] = token_contract
-            
             try:
-                # Выполняем запрос к API
-                response = requests.get(BSCSCAN_URL, params=params_req, timeout=10)
-                data = response.json()
+                # Используем BscScanService для получения транзакций
+                result = await self.bscscan_service.get_transactions(
+                    address=wallet_address,
+                    token_address=token_contract,
+                    page=page,
+                    offset=1000,
+                    sort='desc'
+                )
                 
-                if data.get('status') != '1':
-                    self._log_to_search(f"Ошибка API: {data.get('message', 'Unknown error')}")
-                    break
-                
-                result = data.get('result', [])
                 if not result:
                     self._log_to_search("Больше транзакций не найдено")
                     break
@@ -473,16 +480,18 @@ class AnalysisTab(BaseTab):
                 
                 # Обновляем прогресс
                 progress = int((page / max_pages) * 100)
-                self.progress_bar.setValue(progress)
+                # Используем QTimer для безопасного обновления UI
+                QTimer.singleShot(0, lambda p=progress: self.progress_bar.setValue(p))
+                
+                # Обновляем статистику API
+                QTimer.singleShot(0, self._update_api_stats)
                 
                 page += 1
-                time.sleep(delay)
+                await asyncio.sleep(delay)
                 
             except Exception as e:
                 self._log_to_search(f"Ошибка при запросе страницы {page}: {e}")
-                # Пробуем сменить ключ при ошибке
-                self._rotate_api_key()
-                time.sleep(delay * 2)
+                await asyncio.sleep(delay * 2)
         
         return matching_transactions, sender_counter, sender_details
     

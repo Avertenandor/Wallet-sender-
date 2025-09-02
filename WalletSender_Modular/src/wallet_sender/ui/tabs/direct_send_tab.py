@@ -1,5 +1,5 @@
 """
-Вкладка прямой отправки токенов
+Вкладка прямой отправки токенов с поддержкой JobRouter
 """
 
 import json
@@ -20,6 +20,8 @@ from eth_account import Account
 
 from .base_tab import BaseTab
 from ...utils.logger import get_logger
+from ...services.job_router import get_job_router
+from ...core.nonce_manager import get_nonce_manager
 
 logger = get_logger(__name__)
 
@@ -49,6 +51,13 @@ class DirectSendTab(BaseTab):
         self.account = None
         self.web3 = None
         self.is_sending = False
+        
+        # Инициализируем JobRouter и NonceManager
+        self.job_router = get_job_router()
+        self.nonce_manager = get_nonce_manager()
+        
+        # Текущие задачи
+        self.current_jobs = {}
         
         # Вызываем родительский конструктор
         super().__init__(main_window, parent)
@@ -81,6 +90,11 @@ class DirectSendTab(BaseTab):
         self.refresh_balance_btn.clicked.connect(self.refresh_balance)
         self.refresh_balance_btn.setEnabled(False)
         buttons_layout.addWidget(self.refresh_balance_btn)
+        
+        self.cancel_btn = QPushButton("❌ Отменить")
+        self.cancel_btn.clicked.connect(self.cancel_current_jobs)
+        self.cancel_btn.setEnabled(False)
+        buttons_layout.addWidget(self.cancel_btn)
         
         buttons_layout.addStretch()
         layout.addLayout(buttons_layout)
@@ -296,7 +310,7 @@ class DirectSendTab(BaseTab):
             self.balance_label.setText("Баланс: Ошибка получения")
             
     def send_transaction(self):
-        """Отправка транзакции"""
+        """Отправка транзакции через JobRouter"""
         if not self.account or not self.web3:
             QMessageBox.warning(self, "Ошибка", "Кошелек не подключен!")
             return
@@ -314,70 +328,150 @@ class DirectSendTab(BaseTab):
             
         token_type = self.token_combo.currentText()
         
+        # Определяем адрес токена
+        token_address = None
+        if token_type == "BNB":
+            token_address = None  # Нативный токен
+        elif token_type == "PLEX ONE":
+            token_address = CONTRACTS['PLEX_ONE']
+        elif token_type == "USDT":
+            token_address = CONTRACTS['USDT']
+        elif token_type == "Другой...":
+            token_address = self.custom_token_input.text().strip()
+            if not token_address or not self.web3.is_address(token_address):
+                QMessageBox.warning(self, "Ошибка", "Введите корректный адрес токена!")
+                return
+        
         # Блокируем кнопку на время отправки
         self.send_btn.setEnabled(False)
         self.send_btn.setText("Отправка...")
+        self.cancel_btn.setEnabled(True)
         
-        try:
-            tx_hash = None
-            gas_price = self.get_gas_price_wei()  # Используем метод из базового класса
-            gas_limit = self.get_gas_limit()  # Используем метод из базового класса
+        # Создаем задачу для JobRouter
+        job_data = {
+            'type': 'send_token' if token_address else 'send_bnb',
+            'from_address': self.account.address,
+            'to_address': recipient,
+            'amount': amount,
+            'token_address': token_address,
+            'private_key': self.account.key.hex(),
+            'gas_price': self.get_gas_price_wei(),
+            'gas_limit': self.get_gas_limit(),
+            'token_name': token_type
+        }
+        
+        # Добавляем задачу в очередь
+        job_id = self.job_router.add_job(
+            job_data,
+            callback=self._on_transaction_complete,
+            progress_callback=self._on_transaction_progress
+        )
+        
+        # Сохраняем информацию о задаче
+        self.current_jobs[job_id] = {
+            'token': token_type,
+            'recipient': recipient,
+            'amount': amount
+        }
+        
+        self.log(f"Задача {job_id} добавлена в очередь для отправки {amount} {token_type} на {recipient[:10]}...")
+    
+    def _on_transaction_progress(self, job_id: str, progress: float, message: str):
+        """Обработка прогресса транзакции"""
+        if job_id in self.current_jobs:
+            self.send_btn.setText(f"Отправка... {int(progress*100)}%")
+            self.log(f"[{job_id}] {message} ({int(progress*100)}%)")
+    
+    def _on_transaction_complete(self, job_id: str, success: bool, result: Any):
+        """Обработка завершения транзакции"""
+        if job_id not in self.current_jobs:
+            return
             
-            if token_type == "BNB":
-                # Отправка нативной валюты BNB
-                tx_hash = self._send_bnb(recipient, amount, gas_price, gas_limit)
-                
-            elif token_type in ["PLEX ONE", "USDT"]:
-                # Отправка токенов
-                token_address = CONTRACTS['PLEX_ONE'] if token_type == "PLEX ONE" else CONTRACTS['USDT']
-                tx_hash = self._send_token(recipient, amount, token_address, gas_price, gas_limit)
-                
-            elif token_type == "Другой...":
-                # Отправка пользовательского токена
-                token_address = self.custom_token_input.text().strip()
-                if not token_address or not self.web3.is_address(token_address):
-                    QMessageBox.warning(self, "Ошибка", "Введите корректный адрес токена!")
-                    return
-                tx_hash = self._send_token(recipient, amount, token_address, gas_price, gas_limit)
-                
-            if tx_hash:
-                # Добавляем в историю
-                self._add_to_history(token_type, recipient, amount, "✅ Успешно", tx_hash)
-                self.log(f"✅ Транзакция отправлена: {tx_hash}", "SUCCESS")
-                
-                # Показываем сообщение об успехе
-                msg = QMessageBox(self)
-                msg.setWindowTitle("Успех")
-                msg.setText(f"Транзакция успешно отправлена!\n\nTx Hash: {tx_hash[:20]}...")
-                msg.setDetailedText(f"Полный хэш: {tx_hash}\n\nПолучатель: {recipient}\nСумма: {amount} {token_type}")
-                msg.exec_()
-                
-                # Обновляем баланс
-                self.refresh_balance()
-                
-                # Очищаем поля
-                self.recipient_input.clear()
-                self.amount_input.setValue(0)
-                
-        except Exception as e:
-            error_msg = str(e)
-            self._add_to_history(token_type, recipient, amount, "❌ Ошибка", "")
+        job_info = self.current_jobs[job_id]
+        
+        if success:
+            tx_hash = result.get('tx_hash', '')
+            # Добавляем в историю
+            self._add_to_history(
+                job_info['token'],
+                job_info['recipient'],
+                job_info['amount'],
+                "✅ Успешно",
+                tx_hash
+            )
+            self.log(f"✅ Транзакция завершена: {tx_hash}", "SUCCESS")
+            
+            # Показываем сообщение об успехе
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Успех")
+            msg.setText(f"Транзакция успешно отправлена!\n\nTx Hash: {tx_hash[:20]}...")
+            msg.setDetailedText(
+                f"Полный хэш: {tx_hash}\n\n"
+                f"Получатель: {job_info['recipient']}\n"
+                f"Сумма: {job_info['amount']} {job_info['token']}"
+            )
+            msg.exec_()
+            
+            # Обновляем баланс
+            self.refresh_balance()
+            
+            # Очищаем поля
+            self.recipient_input.clear()
+            self.amount_input.setValue(0)
+        else:
+            error_msg = str(result)
+            self._add_to_history(
+                job_info['token'],
+                job_info['recipient'],
+                job_info['amount'],
+                "❌ Ошибка",
+                ""
+            )
             self.log(f"❌ Ошибка отправки: {error_msg}", "ERROR")
             QMessageBox.critical(self, "Ошибка", f"Не удалось отправить транзакцию:\n\n{error_msg}")
-            
-        finally:
-            # Восстанавливаем кнопку
+        
+        # Удаляем задачу из списка
+        del self.current_jobs[job_id]
+        
+        # Восстанавливаем кнопку
+        if not self.current_jobs:
             self.send_btn.setEnabled(True)
             self.send_btn.setText("🚀 Отправить")
+            self.cancel_btn.setEnabled(False)
+    
+    def cancel_current_jobs(self):
+        """Отмена текущих задач"""
+        if not self.current_jobs:
+            return
+            
+        # Отменяем все активные задачи
+        for job_id in list(self.current_jobs.keys()):
+            success = self.job_router.cancel_job(job_id)
+            if success:
+                job_info = self.current_jobs[job_id]
+                self._add_to_history(
+                    job_info['token'],
+                    job_info['recipient'],
+                    job_info['amount'],
+                    "⚠️ Отменено",
+                    ""
+                )
+                self.log(f"Задача {job_id} отменена")
+                del self.current_jobs[job_id]
+        
+        # Восстанавливаем интерфейс
+        self.send_btn.setEnabled(True)
+        self.send_btn.setText("🚀 Отправить")
+        self.cancel_btn.setEnabled(False)
     
     def _send_bnb(self, to_address: str, amount: float, gas_price: int, gas_limit: int) -> str:
-        """Отправка BNB"""
+        """Отправка BNB с использованием NonceManager"""
         try:
             # Конвертируем amount в Wei
             amount_wei = self.web3.to_wei(amount, 'ether')
             
-            # Получаем nonce
-            nonce = self.web3.eth.get_transaction_count(self.account.address)
+            # Получаем nonce через NonceManager
+            nonce = self.nonce_manager.get_nonce(self.account.address)
             
             # Создаем транзакцию
             transaction = {
@@ -399,6 +493,8 @@ class DirectSendTab(BaseTab):
             tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
             
             if tx_receipt['status'] == 1:
+                # Увеличиваем nonce после успешной отправки
+                self.nonce_manager.increment_nonce(self.account.address)
                 return tx_hash.hex()
             else:
                 raise Exception("Транзакция отклонена сетью")
@@ -408,7 +504,7 @@ class DirectSendTab(BaseTab):
             raise
             
     def _send_token(self, to_address: str, amount: float, token_address: str, gas_price: int, gas_limit: int) -> str:
-        """Отправка ERC20 токена"""
+        """Отправка ERC20 токена с использованием NonceManager"""
         try:
             # Создаем контракт токена
             contract = self.web3.eth.contract(
@@ -420,8 +516,8 @@ class DirectSendTab(BaseTab):
             decimals = contract.functions.decimals().call()
             amount_in_units = int(amount * (10 ** decimals))
             
-            # Получаем nonce
-            nonce = self.web3.eth.get_transaction_count(self.account.address)
+            # Получаем nonce через NonceManager
+            nonce = self.nonce_manager.get_nonce(self.account.address)
             
             # Создаем транзакцию transfer
             transaction = contract.functions.transfer(
@@ -445,6 +541,8 @@ class DirectSendTab(BaseTab):
             tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
             
             if tx_receipt['status'] == 1:
+                # Увеличиваем nonce после успешной отправки
+                self.nonce_manager.increment_nonce(self.account.address)
                 return tx_hash.hex()
             else:
                 raise Exception("Транзакция отклонена сетью")

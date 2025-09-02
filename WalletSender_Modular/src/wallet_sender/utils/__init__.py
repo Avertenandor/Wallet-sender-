@@ -1,5 +1,7 @@
-"""Utils package for WalletSender Modular"""
+"""
+Utils package for WalletSender
+"""
 
-from .logger import setup_logger, get_logger
+from .logger import get_logger
 
-__all__ = ['setup_logger', 'get_logger']
+__all__ = ['get_logger']

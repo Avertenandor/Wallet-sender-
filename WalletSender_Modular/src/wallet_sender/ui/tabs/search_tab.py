@@ -2,10 +2,12 @@
 Вкладка поиска транзакций с полным функционалом
 """
 
+import asyncio
 import threading
 import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, Future
 
 from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
@@ -18,11 +20,11 @@ from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer, QDate, QUrl
 from PyQt5.QtGui import QColor, QDesktopServices
 
 from web3 import Web3
-import requests
 import csv
 
 from .base_tab import BaseTab
 from ...constants import PLEX_CONTRACT, USDT_CONTRACT, BSCSCAN_URL, BSCSCAN_KEYS
+from ...services import get_bscscan_service
 from ...utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -35,6 +37,7 @@ class SearchTab(BaseTab):
     update_results_signal = pyqtSignal(list)
     search_finished_signal = pyqtSignal(int)  # количество найденных
     progress_signal = pyqtSignal(int, str)  # процент, сообщение
+    error_signal = pyqtSignal(str)  # сообщение об ошибке
     
     def __init__(self, main_window, parent=None):
         super().__init__(main_window, parent)
@@ -43,14 +46,70 @@ class SearchTab(BaseTab):
         self.is_searching = False
         self.stop_search_event = threading.Event()
         self.search_thread = None
-        self.current_api_key_index = 0
         self.search_results = []
+        self.current_search_future: Optional[Future] = None
+        
+        # Получаем глобальный BscScanService
+        self.bscscan_service = get_bscscan_service()
+        
+        # Event loop для асинхронных вызовов
+        self.executor = ThreadPoolExecutor(max_workers=2)
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.loop_thread = None
+        self._start_event_loop()
         
         # Подключение сигналов
         self.update_results_signal.connect(self._update_results_table)
         self.search_finished_signal.connect(self._on_search_finished)
         self.progress_signal.connect(self._update_progress)
+        self.error_signal.connect(self._on_error)
+    
+    def _start_event_loop(self):
+        """Запуск event loop в отдельном потоке"""
+        def run_loop():
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_forever()
         
+        self.loop_thread = threading.Thread(target=run_loop, daemon=True)
+        self.loop_thread.start()
+        
+        # Ждем пока loop запустится
+        while self.loop is None:
+            time.sleep(0.01)
+    
+    def run_async_safe(self, coro, callback=None, error_callback=None):
+        """
+        Безопасный запуск асинхронной корутины без блокировки UI
+        
+        Args:
+            coro: Корутина для выполнения
+            callback: Функция обратного вызова при успехе
+            error_callback: Функция обратного вызова при ошибке
+        """
+        if not self.loop or not self.loop.is_running():
+            logger.error("Event loop is not running")
+            if error_callback:
+                error_callback(Exception("Event loop is not running"))
+            return None
+        
+        def handle_future(future: Future):
+            """Обработчик результата Future"""
+            try:
+                result = future.result()
+                if callback:
+                    callback(result)
+            except Exception as e:
+                logger.error(f"Async operation failed: {e}")
+                if error_callback:
+                    error_callback(e)
+        
+        # Создаем future и добавляем обработчик
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        future.add_done_callback(handle_future)
+        
+        return future
+    
     def init_ui(self):
         """Инициализация интерфейса"""
         layout = QVBoxLayout(self)
@@ -324,13 +383,8 @@ class SearchTab(BaseTab):
         self.progress_bar.setValue(0)
         self.search_log.clear()
         
-        # Запуск потока
-        self.search_thread = threading.Thread(
-            target=self._search_worker,
-            args=(address,),
-            daemon=True
-        )
-        self.search_thread.start()
+        # Запуск асинхронного поиска
+        self._start_async_search(address)
         
         self.log(f"🔍 Начат поиск транзакций для адреса: {address[:8]}...{address[-6:]}", "INFO")
         
@@ -338,88 +392,145 @@ class SearchTab(BaseTab):
         """Остановить поиск"""
         if self.is_searching:
             self.stop_search_event.set()
+            
+            # Отменяем текущую асинхронную операцию
+            if self.current_search_future and not self.current_search_future.done():
+                self.current_search_future.cancel()
+            
             self.log("⏹ Остановка поиска...", "WARNING")
+    
+    def _start_async_search(self, address: str):
+        """Запуск асинхронного поиска"""
+        # Получаем параметры
+        token_filter = self._get_token_filter()
+        direction = self.direction_combo.currentText()
+        max_pages = self.max_pages.value()
+        page_size = self.page_size.value()
+        delay = self.delay.value()
+        
+        # Подготовка фильтров
+        amount_min = None
+        amount_max = None
+        date_from = None
+        date_to = None
+        
+        if self.amount_filter_check.isChecked():
+            amount_min = self.min_amount.value()
+            amount_max = self.max_amount.value()
+        
+        if self.date_filter_check.isChecked():
+            date_from = datetime.combine(
+                self.date_from.date().toPyDate(),
+                datetime.min.time()
+            )
+            date_to = datetime.combine(
+                self.date_to.date().toPyDate(),
+                datetime.max.time()
+            )
+        
+        # Создаем корутину для поиска
+        async def search_coroutine():
+            try:
+                self._log_to_search("Начинаем поиск транзакций...")
+                
+                # Используем метод search_txs сервиса
+                transactions = await self.bscscan_service.search_txs(
+                    address=address,
+                    token_filter=token_filter if token_filter else 'ALL',
+                    amount_min=amount_min,
+                    amount_max=amount_max,
+                    date_from=date_from,
+                    date_to=date_to,
+                    limit=page_size * max_pages
+                )
+                
+                self._log_to_search(f"Получено {len(transactions)} транзакций от API")
+                
+                # Применяем дополнительные фильтры
+                filtered = self._filter_transactions(transactions, address, direction)
+                
+                # Применяем расширенные фильтры
+                final_results = self._apply_filters(filtered)
+                
+                return final_results
+                
+            except asyncio.CancelledError:
+                self._log_to_search("Поиск отменен")
+                raise
+            except Exception as e:
+                logger.error(f"Ошибка при поиске: {e}")
+                self._log_to_search(f"❌ Ошибка: {str(e)}")
+                
+                # Fallback на пагинацию
+                return await self._search_with_pagination_async(
+                    address, token_filter, direction, 
+                    max_pages, page_size, delay
+                )
+        
+        # Запускаем корутину
+        self.current_search_future = self.run_async_safe(
+            search_coroutine(),
+            callback=self._on_search_complete,
+            error_callback=self._on_search_error
+        )
+    
+    async def _search_with_pagination_async(self, address: str, token_filter: Optional[str], 
+                                           direction: str, max_pages: int, 
+                                           page_size: int, delay: float):
+        """Асинхронный поиск с пагинацией"""
+        all_transactions = []
+        
+        for page in range(1, max_pages + 1):
+            if self.stop_search_event.is_set():
+                self._log_to_search("Поиск остановлен пользователем")
+                break
             
-    def _search_worker(self, address: str):
-        """Рабочий поток поиска"""
-        try:
-            self._log_to_search("Начинаем поиск транзакций...")
+            # Обновляем прогресс
+            progress = int((page / max_pages) * 100)
+            self.progress_signal.emit(progress, f"Страница {page}/{max_pages}")
             
-            # Получаем параметры
-            token_filter = self._get_token_filter()
-            direction = self.direction_combo.currentText()
-            max_pages = self.max_pages.value()
-            page_size = self.page_size.value()
-            delay = self.delay.value()
-            
-            all_transactions = []
-            page = 1
-            
-            while page <= max_pages:
-                if self.stop_search_event.is_set():
-                    self._log_to_search("Поиск остановлен пользователем")
+            try:
+                # Используем метод get_transactions сервиса
+                transactions = await self.bscscan_service.get_transactions(
+                    address=address,
+                    token_address=token_filter,
+                    page=page,
+                    offset=page_size,
+                    sort='desc'
+                )
+                
+                if not transactions:
+                    self._log_to_search("Больше транзакций не найдено")
                     break
-                    
-                # Обновляем прогресс
-                progress = int((page / max_pages) * 100)
-                self.progress_signal.emit(progress, f"Страница {page}/{max_pages}")
                 
-                # Формируем запрос
-                params = {
-                    'module': 'account',
-                    'action': 'tokentx' if token_filter else 'txlist',
-                    'address': address,
-                    'page': page,
-                    'offset': page_size,
-                    'sort': 'desc',
-                    'apikey': BSCSCAN_KEYS[self.current_api_key_index] if BSCSCAN_KEYS else ''
-                }
+                # Фильтруем транзакции
+                filtered = self._filter_transactions(transactions, address, direction)
+                all_transactions.extend(filtered)
                 
-                if token_filter:
-                    params['contractaddress'] = token_filter
-                    
-                # Выполняем запрос
-                try:
-                    response = requests.get(BSCSCAN_URL, params=params, timeout=10)
-                    data = response.json()
-                    
-                    if data.get('status') != '1':
-                        self._log_to_search(f"Ошибка API: {data.get('message', 'Unknown')}")
-                        break
-                        
-                    transactions = data.get('result', [])
-                    
-                    if not transactions:
-                        self._log_to_search("Больше транзакций не найдено")
-                        break
-                        
-                    # Фильтруем транзакции
-                    filtered = self._filter_transactions(transactions, address, direction)
-                    all_transactions.extend(filtered)
-                    
-                    self._log_to_search(f"Страница {page}: найдено {len(filtered)} транзакций")
-                    
-                except Exception as e:
-                    self._log_to_search(f"Ошибка запроса: {e}")
-                    self._rotate_api_key()
-                    
-                page += 1
-                time.sleep(delay)
+                self._log_to_search(f"Страница {page}: найдено {len(filtered)} транзакций")
                 
-            # Применяем дополнительные фильтры
-            final_results = self._apply_filters(all_transactions)
+            except Exception as e:
+                logger.error(f"Ошибка на странице {page}: {e}")
+                self._log_to_search(f"Ошибка на странице {page}: {e}")
             
-            # Обновляем результаты
-            self.search_results = final_results
-            self.update_results_signal.emit(final_results)
-            
-            self._log_to_search(f"✅ Поиск завершен. Найдено: {len(final_results)} транзакций")
-            
-        except Exception as e:
-            logger.error(f"Ошибка в потоке поиска: {e}")
-            self._log_to_search(f"❌ Ошибка: {str(e)}")
-        finally:
-            self.search_finished_signal.emit(len(self.search_results))
+            # Асинхронная задержка
+            await asyncio.sleep(delay)
+        
+        # Применяем дополнительные фильтры
+        return self._apply_filters(all_transactions)
+    
+    def _on_search_complete(self, results: List[Dict]):
+        """Обработка успешного завершения поиска"""
+        self.search_results = results
+        self.update_results_signal.emit(results)
+        self._log_to_search(f"✅ Поиск завершен. Найдено: {len(results)} транзакций")
+        self.search_finished_signal.emit(len(results))
+    
+    def _on_search_error(self, error: Exception):
+        """Обработка ошибки поиска"""
+        logger.error(f"Ошибка поиска: {error}")
+        self.error_signal.emit(str(error))
+        self.search_finished_signal.emit(0)
             
     def _get_token_filter(self) -> Optional[str]:
         """Получение фильтра токена"""
@@ -523,12 +634,6 @@ class SearchTab(BaseTab):
         except:
             return False
             
-    def _rotate_api_key(self):
-        """Ротация API ключа"""
-        if BSCSCAN_KEYS:
-            self.current_api_key_index = (self.current_api_key_index + 1) % len(BSCSCAN_KEYS)
-            self._log_to_search(f"Смена API ключа на #{self.current_api_key_index + 1}")
-            
     def _log_to_search(self, message: str):
         """Логирование в поле поиска"""
         QTimer.singleShot(0, lambda: self.search_log.append(message))
@@ -602,6 +707,12 @@ class SearchTab(BaseTab):
         self.progress_bar.setValue(100)
         self.status_label.setText(f"Найдено: {count} транзакций")
         self.log(f"Поиск завершен. Найдено: {count} транзакций", "SUCCESS")
+    
+    @pyqtSlot(str)
+    def _on_error(self, error_msg: str):
+        """Обработка ошибки"""
+        QMessageBox.critical(self, "Ошибка поиска", f"Произошла ошибка:\n{error_msg}")
+        self.log(f"❌ Ошибка: {error_msg}", "ERROR")
         
     def _show_context_menu(self, position):
         """Показ контекстного меню"""
@@ -706,7 +817,49 @@ class SearchTab(BaseTab):
             QMessageBox.warning(self, "Предупреждение", "Нет данных для импорта!")
             return
             
-        # Здесь можно добавить логику импорта в систему наград
-        count = len(self.search_results)
-        self.log(f"🎁 Импортировано {count} транзакций в награды", "SUCCESS")
-        QMessageBox.information(self, "Успех", f"Импортировано {count} транзакций в систему наград")
+        try:
+            # Получаем уникальные адреса отправителей
+            unique_addresses = set()
+            for tx in self.search_results:
+                from_addr = tx.get('from', '')
+                if from_addr and from_addr.lower() != self.address_input.text().lower():
+                    unique_addresses.add(from_addr)
+            
+            if not unique_addresses:
+                QMessageBox.warning(self, "Предупреждение", "Нет подходящих адресов для импорта!")
+                return
+            
+            # Здесь можно добавить логику импорта в систему наград
+            # Например, передать адреса в RewardsTab
+            
+            count = len(unique_addresses)
+            self.log(f"🎁 Подготовлено {count} уникальных адресов для наград", "SUCCESS")
+            QMessageBox.information(
+                self, 
+                "Успех", 
+                f"Подготовлено {count} уникальных адресов для системы наград"
+            )
+            
+        except Exception as e:
+            logger.error(f"Ошибка импорта в награды: {e}")
+            QMessageBox.critical(self, "Ошибка", f"Ошибка импорта:\n{str(e)}")
+    
+    def closeEvent(self, event):
+        """Очистка при закрытии"""
+        # Останавливаем поиск если он активен
+        if self.is_searching:
+            self.stop_search()
+        
+        # Останавливаем event loop
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        
+        # Ждем завершения потока
+        if self.loop_thread and self.loop_thread.is_alive():
+            self.loop_thread.join(timeout=1.0)
+        
+        # Закрываем executor
+        if self.executor:
+            self.executor.shutdown(wait=False)
+        
+        super().closeEvent(event)

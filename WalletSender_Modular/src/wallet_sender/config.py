@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, List
 from copy import deepcopy
 
 # Project Info
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __author__ = "Avertenandor"
 __description__ = "Модульная версия WalletSender для массовой рассылки токенов BSC"
 
@@ -48,6 +48,42 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     ],
     "api_rate_limit": 5,
     "rotate_api_keys": True,
+    "api": {
+        "rate_limit": {
+            "per_key_rps": 4,
+            "global_rps": 8,
+            "backoff_ms": [500, 1000, 2000],
+            "request_timeout_s": 10
+        },
+        "rotate_keys": True,
+        "bscscan_api_keys": [
+            "RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH",
+            "U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ",
+            "RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1"
+        ]
+    },
+    "rpc": {
+        "list": [
+            "https://bsc-dataseed.binance.org/",
+            "https://bsc-dataseed1.binance.org/",
+            "https://bsc-dataseed2.binance.org/",
+            "https://bsc-dataseed3.binance.org/",
+            "https://bsc-dataseed4.binance.org/"
+        ],
+        "hedge": {
+            "enabled": False,
+            "threshold_ms": 800
+        },
+        "max_rps": 5
+    },
+    "txqueue": {
+        "max_parallel_rpc": 4,
+        "per_address_serial": True,
+        "retry": {
+            "attempts": 3,
+            "base_delay_ms": 1000
+        }
+    },
     "ui": {
         "window_width": 1400,
         "window_height": 900,

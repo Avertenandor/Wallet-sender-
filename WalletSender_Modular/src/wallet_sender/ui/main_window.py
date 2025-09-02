@@ -164,9 +164,29 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.status_bar.addPermanentWidget(self.progress_bar)
         
+        # Статус очереди задач
+        self.queue_status_label = QLabel("📋 Queue: 0/0/0")
+        self.queue_status_label.setToolTip("Очередь: в очереди/выполняется/ошибки")
+        self.status_bar.addPermanentWidget(self.queue_status_label)
+        
+        # Статус RPC
+        self.rpc_status_label = QLabel("🌐 RPC: -")
+        self.rpc_status_label.setToolTip("RPC узел и задержка")
+        self.status_bar.addPermanentWidget(self.rpc_status_label)
+        
+        # Статус API Rate Limiter
+        self.api_status_label = QLabel("🔒 API: -")
+        self.api_status_label.setToolTip("API Rate Limiter")
+        self.status_bar.addPermanentWidget(self.api_status_label)
+        
         # Статус подключения к сети
         self.network_status_label = QLabel("🌐 Проверка сети...")
         self.status_bar.addPermanentWidget(self.network_status_label)
+        
+        # Таймер для обновления статусов
+        self.status_update_timer = QTimer()
+        self.status_update_timer.timeout.connect(self._update_status_indicators)
+        self.status_update_timer.start(1000)  # Каждую секунду
         
         # Таймер для проверки сети
         self.network_check_timer = QTimer()
@@ -184,6 +204,53 @@ class MainWindow(QMainWindow):
                 self.network_status_label.setText("🔴 BSC отключена")
         except Exception:
             self.network_status_label.setText("🟡 BSC неизвестно")
+    
+    def _update_status_indicators(self):
+        """Обновление индикаторов статуса"""
+        try:
+            # Обновляем статус очереди
+            from ..services.job_router import get_job_router
+            router = get_job_router()
+            stats = router.stats()
+            
+            queued = stats['states'].get('queued', 0)
+            running = stats['states'].get('running', 0)
+            failed = stats['states'].get('failed', 0)
+            
+            self.queue_status_label.setText(f"📋 Queue: {queued}/{running}/{failed}")
+            
+            # Обновляем статус RPC
+            from ..core.rpc import get_rpc_pool
+            rpc_pool = get_rpc_pool()
+            endpoint = rpc_pool.current_primary()
+            if endpoint:
+                # Показываем только домен RPC
+                import re
+                match = re.search(r'//([^/]+)', endpoint)
+                if match:
+                    rpc_short = match.group(1)[:20]  # Первые 20 символов
+                else:
+                    rpc_short = endpoint[:20]
+                self.rpc_status_label.setText(f"🌐 RPC: {rpc_short}")
+            else:
+                self.rpc_status_label.setText("🌐 RPC: No healthy endpoints")
+            
+            # Обновляем статус API Rate Limiter
+            from ..core.limiter import get_rate_limiter
+            limiter = get_rate_limiter()
+            limiter_stats = limiter.get_stats()
+            
+            rps = limiter_stats.get('recent_rps', 0)
+            blocked = limiter_stats.get('blocked_requests', 0)
+            
+            if blocked > 0:
+                self.api_status_label.setText(f"🔒 API: {rps:.1f}rps ⚠️{blocked}")
+            else:
+                self.api_status_label.setText(f"🔒 API: {rps:.1f}rps")
+                
+        except Exception as e:
+            # Не логируем ошибки обновления статусов
+            pass
     
     def _load_tabs(self):
         """Загрузка вкладок приложения"""
@@ -426,6 +493,31 @@ class MainWindow(QMainWindow):
             # Остановка таймеров
             if hasattr(self, 'network_check_timer'):
                 self.network_check_timer.stop()
+            if hasattr(self, 'status_update_timer'):
+                self.status_update_timer.stop()
+            
+            # Закрытие BscScanService (graceful shutdown)
+            try:
+                from ..services.bscscan_service import close_bscscan_service
+                import asyncio
+                
+                # Создаем event loop если его нет или используем существующий
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                # Закрываем сервис
+                if not loop.is_running():
+                    loop.run_until_complete(close_bscscan_service())
+                else:
+                    # Если loop уже запущен, планируем закрытие
+                    asyncio.ensure_future(close_bscscan_service())
+                    
+                logger.info("✅ BscScanService закрыт")
+            except Exception as e:
+                logger.warning(f"Не удалось закрыть BscScanService: {e}")
                 
             logger.info("👋 Приложение закрыто")
             event.accept()

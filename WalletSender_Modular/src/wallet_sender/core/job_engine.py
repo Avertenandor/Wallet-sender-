@@ -13,6 +13,7 @@ from eth_account import Account
 
 from .store import get_store
 from .rpc import get_rpc_pool
+from .nonce_manager import NonceManager, get_nonce_manager
 from ..utils.logger import get_logger
 from ..config import get_config
 
@@ -29,88 +30,6 @@ class JobState(Enum):
     CANCELLED = "cancelled"
 
 
-class NonceManager:
-    """Менеджер nonce для предотвращения конфликтов"""
-    
-    def __init__(self):
-        self.nonces = {}  # {address: nonce}
-        self.locks = {}   # {address: threading.Lock}
-        self.pending_txs = {}  # {address: set(nonces)}
-        
-    def get_nonce(self, w3: Web3, address: str) -> int:
-        """
-        Получение следующего nonce для адреса
-        
-        Args:
-            w3: Web3 экземпляр
-            address: Адрес отправителя
-            
-        Returns:
-            Следующий nonce
-        """
-        # Нормализуем адрес
-        address = Web3.to_checksum_address(address)
-        
-        # Создаем блокировку для адреса если её нет
-        if address not in self.locks:
-            self.locks[address] = threading.Lock()
-        
-        with self.locks[address]:
-            # Получаем текущий nonce из сети
-            network_nonce = w3.eth.get_transaction_count(address, 'pending')
-            
-            # Если у нас нет кэшированного nonce или он меньше сетевого
-            if address not in self.nonces or self.nonces[address] < network_nonce:
-                self.nonces[address] = network_nonce
-            
-            # Получаем nonce для использования
-            nonce = self.nonces[address]
-            
-            # Увеличиваем для следующего использования
-            self.nonces[address] += 1
-            
-            # Добавляем в pending
-            if address not in self.pending_txs:
-                self.pending_txs[address] = set()
-            self.pending_txs[address].add(nonce)
-            
-            logger.debug(f"Выдан nonce {nonce} для {address}")
-            return nonce
-    
-    def confirm_nonce(self, address: str, nonce: int):
-        """Подтверждение использования nonce"""
-        address = Web3.to_checksum_address(address)
-        
-        if address in self.pending_txs and nonce in self.pending_txs[address]:
-            self.pending_txs[address].remove(nonce)
-            logger.debug(f"Подтвержден nonce {nonce} для {address}")
-    
-    def release_nonce(self, address: str, nonce: int):
-        """Освобождение nonce при ошибке"""
-        address = Web3.to_checksum_address(address)
-        
-        with self.locks.get(address, threading.Lock()):
-            # Удаляем из pending
-            if address in self.pending_txs and nonce in self.pending_txs[address]:
-                self.pending_txs[address].remove(nonce)
-            
-            # Если это был последний nonce, откатываем счетчик
-            if address in self.nonces and self.nonces[address] == nonce + 1:
-                self.nonces[address] = nonce
-                logger.debug(f"Откат nonce до {nonce} для {address}")
-    
-    def reset_address(self, address: str):
-        """Сброс всех nonce для адреса"""
-        address = Web3.to_checksum_address(address)
-        
-        with self.locks.get(address, threading.Lock()):
-            if address in self.nonces:
-                del self.nonces[address]
-            if address in self.pending_txs:
-                del self.pending_txs[address]
-            logger.info(f"Сброшены nonce для {address}")
-
-
 class JobEngine:
     """Движок выполнения задач"""
     
@@ -119,7 +38,7 @@ class JobEngine:
         self.store = get_store()
         self.rpc_pool = get_rpc_pool()
         self.config = get_config()
-        self.nonce_manager = NonceManager()
+        self.nonce_manager = get_nonce_manager()  # Используем глобальный экземпляр
         
         self.job_queue = queue.PriorityQueue()
         self.active_jobs = {}  # {job_id: JobExecutor}
@@ -511,8 +430,13 @@ class DistributionExecutor(BaseExecutor):
                     break
                 
                 try:
-                    # Получаем nonce
-                    nonce = self.engine.nonce_manager.get_nonce(w3, sender_address)
+                    # Устанавливаем web3 в nonce manager если нужно
+                    if not self.engine.nonce_manager.web3:
+                        self.engine.nonce_manager.set_web3(w3)
+                    
+                    # Резервируем nonce
+                    ticket = self.engine.nonce_manager.reserve(sender_address)
+                    nonce = ticket.nonce
                     
                     # Формируем транзакцию
                     if token_address and token_address != "BNB":
@@ -536,8 +460,8 @@ class DistributionExecutor(BaseExecutor):
                     signed_tx = account.sign_transaction(tx)
                     tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
                     
-                    # Подтверждаем nonce
-                    self.engine.nonce_manager.confirm_nonce(sender_address, nonce)
+                    # Подтверждаем использование nonce
+                    self.engine.nonce_manager.complete(ticket, tx_hash.hex())
                     
                     # Сохраняем в БД
                     self.engine.store.add_transaction(
@@ -560,9 +484,9 @@ class DistributionExecutor(BaseExecutor):
                     logger.error(f"Ошибка отправки на {recipient}: {e}")
                     self.failed_count += 1
                     
-                    # Освобождаем nonce при ошибке
-                    if 'nonce' in locals():
-                        self.engine.nonce_manager.release_nonce(sender_address, nonce)
+                    # Отмечаем неудачу использования nonce
+                    if 'ticket' in locals():
+                        self.engine.nonce_manager.fail(ticket, str(e))
                 
                 # Обновляем прогресс
                 if (i + 1) % 10 == 0:  # Каждые 10 транзакций

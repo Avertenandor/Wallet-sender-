@@ -22,6 +22,8 @@ from eth_account import Account
 
 from .base_tab import BaseTab
 from ...core.wallet_manager import WalletManager
+from ...services.job_router import get_job_router
+from ...core.nonce_manager import get_nonce_manager
 from ...services.token_service import TokenService
 from ...services.transaction_service import TransactionService
 from ...constants import PLEX_CONTRACT, USDT_CONTRACT
@@ -74,6 +76,11 @@ class MassDistributionTab(BaseTab):
         self.web3 = None
         self.account = None
         self.balances = {}
+        
+        # Инициализация JobRouter и NonceManager
+        self.job_router = get_job_router()
+        self.nonce_manager = get_nonce_manager()
+        self.active_jobs = {}  # Словарь активных задач
         
         # Настройка таймера для обновления балансов
         self.balance_timer = QTimer()
@@ -816,8 +823,8 @@ class MassDistributionTab(BaseTab):
             # Конвертируем amount в Wei
             amount_wei = self.web3.to_wei(amount, 'ether')
             
-            # Получаем nonce
-            nonce = self.web3.eth.get_transaction_count(self.account.address)
+            # Получаем nonce через NonceManager
+            nonce = self.nonce_manager.get_nonce(self.account.address)
             
             # Получаем цену газа из UI
             gas_price = self.get_gas_price_wei()  # Используем метод из базового класса
@@ -842,6 +849,8 @@ class MassDistributionTab(BaseTab):
             tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
             
             if tx_receipt['status'] == 1:
+                # Увеличиваем nonce после успешной отправки
+                self.nonce_manager.increment_nonce(self.account.address)
                 return {
                     'success': True,
                     'tx_hash': tx_hash.hex(),
@@ -870,8 +879,8 @@ class MassDistributionTab(BaseTab):
             decimals = contract.functions.decimals().call()
             amount_in_units = int(amount * (10 ** decimals))
             
-            # Получаем nonce
-            nonce = self.web3.eth.get_transaction_count(self.account.address)
+            # Получаем nonce через NonceManager
+            nonce = self.nonce_manager.get_nonce(self.account.address)
             
             # Получаем настройки газа из UI
             gas_price = self.get_gas_price_wei()  # Используем метод из базового класса
@@ -899,6 +908,8 @@ class MassDistributionTab(BaseTab):
             tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
             
             if tx_receipt['status'] == 1:
+                # Увеличиваем nonce после успешной отправки
+                self.nonce_manager.increment_nonce(self.account.address)
                 return {
                     'success': True,
                     'tx_hash': tx_hash.hex(),
