@@ -10,7 +10,7 @@ from dataclasses import asdict
 
 from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QPushButton,
-    QLineEdit, QComboBox, QSpinBox, QCheckBox, QTextEdit,
+    QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QTextEdit,
     QMessageBox, QTabWidget, QWidget, QFormLayout
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QThread
@@ -188,27 +188,29 @@ class SettingsTab(BaseTab):
         """Создание вкладки настроек газа"""
         widget = QWidget()
         layout = QFormLayout(widget)
-        
+
         # Режим газа
         self.gas_mode = QComboBox()
         self.gas_mode.addItems(["auto", "manual"])
         self.gas_mode.currentTextChanged.connect(self.on_gas_mode_changed)
         layout.addRow("Режим газа:", self.gas_mode)
-        
-        # Цена газа (Gwei)
-        self.gas_price_gwei = QSpinBox()
-        self.gas_price_gwei.setRange(1, 1000)
-        self.gas_price_gwei.setValue(5)
+
+        # Цена газа (Gwei) — поддержка дробных значений (например, 0.1)
+        self.gas_price_gwei = QDoubleSpinBox()
+        self.gas_price_gwei.setRange(0.01, 1000.0)
+        self.gas_price_gwei.setDecimals(3)
+        self.gas_price_gwei.setSingleStep(0.1)
+        self.gas_price_gwei.setValue(5.0)
         self.gas_price_gwei.setSuffix(" Gwei")
         layout.addRow("Цена газа:", self.gas_price_gwei)
-        
+
         # Лимит газа по умолчанию
         self.gas_limit_default = QSpinBox()
         self.gas_limit_default.setRange(21000, 1000000)
         self.gas_limit_default.setValue(100000)
         self.gas_limit_default.setSingleStep(1000)
         layout.addRow("Лимит газа:", self.gas_limit_default)
-        
+
         return widget
         
     def create_limits_tab(self) -> QWidget:
@@ -376,10 +378,15 @@ class SettingsTab(BaseTab):
         
         # Газ
         self.gas_mode.setCurrentText(self.current_settings.gas_mode)
-        if self.current_settings.gas_price_wei:
-            # Конвертируем wei в gwei
-            gwei_price = self.current_settings.gas_price_wei // 10**9
-            self.gas_price_gwei.setValue(gwei_price)
+        if self.current_settings.gas_price_wei not in (None, "", 0):
+            # Конвертируем wei (str|int) в gwei (float)
+            try:
+                wei_val = int(self.current_settings.gas_price_wei)
+                gwei_price = wei_val / 10**9
+                self.gas_price_gwei.setValue(float(gwei_price))
+            except Exception:
+                # На случай некорректного значения в конфиге
+                self.gas_price_gwei.setValue(5.0)
         self.gas_limit_default.setValue(self.current_settings.gas_limit_default)
         
         # Лимиты
@@ -421,8 +428,8 @@ class SettingsTab(BaseTab):
         # Газ
         settings.gas_mode = self.gas_mode.currentText()
         if settings.gas_mode == "manual":
-            # Конвертируем gwei в wei
-            settings.gas_price_wei = self.gas_price_gwei.value() * 10**9
+            # Конвертируем gwei (float) в wei (int)
+            settings.gas_price_wei = int(self.gas_price_gwei.value() * 10**9)
         settings.gas_limit_default = self.gas_limit_default.value()
         
         # Лимиты
@@ -483,8 +490,14 @@ class SettingsTab(BaseTab):
             # Обновляем текущие настройки
             self.current_settings = settings
             
-            # Применяем к RPC пулу
-            self.rpc_pool.set_max_rps(settings.max_rps)
+            # Применяем к RPC пулу (если метод доступен)
+            try:
+                if hasattr(self.rpc_pool, 'set_max_rps'):
+                    self.rpc_pool.set_max_rps(settings.max_rps)
+                elif hasattr(self.rpc_pool, 'set_rate_limit'):
+                    self.rpc_pool.set_rate_limit(settings.max_rps)
+            except Exception as e:
+                logger.warning(f"Не удалось применить лимит RPS к RPC пулу: {e}")
             
             # Отправляем сигнал об изменении
             self.settings_changed.emit(settings)
