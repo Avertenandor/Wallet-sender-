@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/vscode-pyright/schemas/pyrightconfig.schema.json",
+  "include": [
+    "src/**/*.py",
+    "main.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.git",
+    "**/node_modules",
+    ".venv",
+    "venv"
+  ],
+  "extraPaths": [
+    "./src",
+    "src"
+  ],
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": "none",
+  "stubPath": "./typings",
+  "pythonVersion": "3.12"
+}
