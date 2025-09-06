@@ -378,13 +378,15 @@ class MainWindow(QMainWindow):
         # Цветовая схема для уровней
         colors = {
             "DEBUG": "#888",
-            "INFO": "#000",
+            "INFO": "#ff8c00",  # Темно-оранжевый вместо черного
             "SUCCESS": "#0a0",
             "WARNING": "#f90",
-            "ERROR": "#f00"
+            "ERROR": "#f00",
+            "SALE": "#00ff88",  # Яркий зеленый для продаж
+            "PROFIT": "#00ffff"  # Голубой для прибыли
         }
         
-        color = colors.get(level, "#000")
+        color = colors.get(level, "#ff8c00")  # Оранжевый для неизвестных уровней
         formatted_message = f'<span style="color: {color}">[{timestamp}] {message}</span>'
         
         self.log_area.append(formatted_message)

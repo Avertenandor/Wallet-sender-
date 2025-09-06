@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QHeaderView,
     QAbstractItemView, QMessageBox, QMenu, QApplication,
     QFileDialog, QDialog, QDialogButtonBox, QListWidget,
-    QCheckBox, QSplitter
+    QCheckBox, QSplitter, QScrollArea
 )
 from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer
 from PyQt5.QtGui import QColor
@@ -80,16 +80,25 @@ class RewardsTab(BaseTab):
         header_layout.addWidget(header_label)
         layout.addWidget(header)
         
-        # Splitter для основного контента
-        splitter = QSplitter(Qt.Horizontal)
+        # Splitter для основного контента (совместимость PyQt5/6)
+        try:
+            splitter = QSplitter(Qt.Orientation.Horizontal)  # type: ignore[attr-defined]
+        except AttributeError:
+            splitter = QSplitter(Qt.Horizontal)  # type: ignore[attr-defined]
         
-        # Левая панель - список наград
+        # Левая панель - список наград (в ScrollArea)
         left_widget = self._create_rewards_panel()
-        splitter.addWidget(left_widget)
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(left_widget)
+        splitter.addWidget(left_scroll)
         
-        # Правая панель - конфигурации и управление
+        # Правая панель - конфигурации и управление (в ScrollArea)
         right_widget = self._create_control_panel()
-        splitter.addWidget(right_widget)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setWidget(right_widget)
+        splitter.addWidget(right_scroll)
         
         splitter.setSizes([700, 400])
         layout.addWidget(splitter)
@@ -223,65 +232,65 @@ class RewardsTab(BaseTab):
         """Создание панели управления"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+
         # Конфигурации наград
         config_group = QGroupBox("Конфигурации наград")
         config_layout = QVBoxLayout(config_group)
-        
+
         # Список сохраненных конфигураций
         config_layout.addWidget(QLabel("Сохраненные конфигурации:"))
-        
+
         self.configs_list = QListWidget()
         self.configs_list.setMaximumHeight(100)
         self.configs_list.itemDoubleClicked.connect(self.load_config)
         config_layout.addWidget(self.configs_list)
-        
+
         # Кнопки управления конфигурациями
         config_buttons_layout = QHBoxLayout()
-        
+
         self.save_config_btn = QPushButton("💾 Сохранить")
         self.save_config_btn.clicked.connect(self.save_config)
         config_buttons_layout.addWidget(self.save_config_btn)
-        
+
         self.load_config_btn = QPushButton("📂 Загрузить")
         self.load_config_btn.clicked.connect(self.load_config)
         config_buttons_layout.addWidget(self.load_config_btn)
-        
+
         self.delete_config_btn = QPushButton("🗑 Удалить")
         self.delete_config_btn.clicked.connect(self.delete_config)
         config_buttons_layout.addWidget(self.delete_config_btn)
-        
+
         config_layout.addLayout(config_buttons_layout)
-        
+
         layout.addWidget(config_group)
-        
+
         # Параметры отправки
         sending_group = QGroupBox("Параметры отправки")
         sending_layout = QVBoxLayout(sending_group)
-        
+
         # Выбор токена
         token_layout = QHBoxLayout()
         token_layout.addWidget(QLabel("Токен награды:"))
-        
+
         self.reward_token_combo = QComboBox()
         self.reward_token_combo.addItems(['PLEX ONE', 'USDT', 'BNB'])
         token_layout.addWidget(self.reward_token_combo)
-        
+
         sending_layout.addLayout(token_layout)
-        
+
         # Сумма награды
         amount_layout = QHBoxLayout()
         amount_layout.addWidget(QLabel("Сумма награды:"))
-        
+
         self.reward_amount = QDoubleSpinBox()
         self.reward_amount.setRange(0.00001, 10000)
         self.reward_amount.setDecimals(8)
         self.reward_amount.setValue(0.1)
         amount_layout.addWidget(self.reward_amount)
-        
+
         self.use_percentage = QCheckBox("% от суммы TX")
         amount_layout.addWidget(self.use_percentage)
-        
+
         self.percentage_amount = QDoubleSpinBox()
         self.percentage_amount.setRange(0.01, 100)
         self.percentage_amount.setDecimals(2)
@@ -289,69 +298,70 @@ class RewardsTab(BaseTab):
         self.percentage_amount.setSuffix(" %")
         self.percentage_amount.setEnabled(False)
         amount_layout.addWidget(self.percentage_amount)
-        
+
         self.use_percentage.toggled.connect(self.percentage_amount.setEnabled)
         self.use_percentage.toggled.connect(lambda checked: self.reward_amount.setEnabled(not checked))
-        
+
         sending_layout.addLayout(amount_layout)
-        
+
         # Параметры газа
         gas_layout = QHBoxLayout()
         gas_layout.addWidget(QLabel("Цена газа (Gwei):"))
-        
+
         self.gas_price = QDoubleSpinBox()
-        self.gas_price.setRange(1, 100)
-        self.gas_price.setDecimals(1)
-        self.gas_price.setValue(5)
+        self.gas_price.setRange(0.01, 1000.0)
+        self.gas_price.setDecimals(3)
+        self.gas_price.setSingleStep(0.1)
+        self.gas_price.setValue(0.1)
         gas_layout.addWidget(self.gas_price)
-        
+
         gas_layout.addWidget(QLabel("Лимит газа:"))
-        
+
         self.gas_limit = QSpinBox()
         self.gas_limit.setRange(21000, 500000)
         self.gas_limit.setValue(100000)
         gas_layout.addWidget(self.gas_limit)
-        
+
         sending_layout.addLayout(gas_layout)
-        
+
         # Задержка между отправками
         delay_layout = QHBoxLayout()
         delay_layout.addWidget(QLabel("Задержка между отправками (сек):"))
-        
+
         self.send_delay = QDoubleSpinBox()
         self.send_delay.setRange(0.1, 60)
         self.send_delay.setValue(2)
         self.send_delay.setSingleStep(0.5)
         delay_layout.addWidget(self.send_delay)
-        
+
         sending_layout.addLayout(delay_layout)
-        
+
         layout.addWidget(sending_group)
-        
+
         # Кнопки отправки
         send_buttons_group = QGroupBox("Управление отправкой")
         send_buttons_layout = QVBoxLayout(send_buttons_group)
-        
+
         self.send_rewards_btn = QPushButton("🚀 Отправить выбранные награды")
         self.send_rewards_btn.clicked.connect(self.start_sending_rewards)
         send_buttons_layout.addWidget(self.send_rewards_btn)
-        
+
         self.stop_sending_btn = QPushButton("⏹ Остановить отправку")
         self.stop_sending_btn.setEnabled(False)
         self.stop_sending_btn.clicked.connect(self.stop_sending_rewards)
         send_buttons_layout.addWidget(self.stop_sending_btn)
-        
+
         # Прогресс отправки
         self.sending_progress = QProgressBar()
         send_buttons_layout.addWidget(self.sending_progress)
-        
+
         self.sending_status = QLabel("Готов к отправке")
         send_buttons_layout.addWidget(self.sending_status)
-        
+
         layout.addWidget(send_buttons_group)
-        
+
         layout.addStretch()
-        
+
         return widget
         
     def _create_status_panel(self) -> QGroupBox:
@@ -1034,7 +1044,7 @@ class RewardsTab(BaseTab):
             self.reward_amount.setValue(config.get('amount', 0.1))
             self.use_percentage.setChecked(config.get('use_percentage', False))
             self.percentage_amount.setValue(config.get('percentage', 1.0))
-            self.gas_price.setValue(config.get('gas_price', 5))
+            self.gas_price.setValue(config.get('gas_price', 0.1))
             self.gas_limit.setValue(config.get('gas_limit', 100000))
             self.send_delay.setValue(config.get('delay', 2))
             

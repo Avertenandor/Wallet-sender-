@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.2.0 (2025-01-29) - Critical Fixes & Stability Update
+
+### Major Fixes:
+- **Fixed Auto-Buy Tab**: Complete overhaul of Web3 connection, wallet connection, and balance retrieval
+- **Fixed Auto-Sales Tab**: Enhanced with multiple RPC endpoints and BIP44 derivation path
+- **Fixed Mass Distribution Tabs**: All 3 mass distribution slots now work independently with proper Web3 connections
+- **Enhanced Web3 Connectivity**: Multiple RPC endpoints with fallback mechanisms for all tabs
+- **Improved Wallet Connection**: BIP44 derivation path support for seed phrases across all tabs
+
+### Core Improvements:
+- **Multiple RPC Endpoints**: Added 10+ BSC RPC endpoints for maximum reliability
+- **BIP44 Derivation Path**: Proper m/44'/60'/0'/0/0 derivation for Ethereum/BSC wallets
+- **Contract Validation**: Added contract existence checks before balance retrieval
+- **Checksum Addresses**: Proper address formatting for all blockchain operations
+- **Debug Tools**: Added balance diagnostic buttons to all wallet-connected tabs
+
+### Technical Details:
+- **Web3 Connection**: Timeout handling (10s) and automatic reconnection
+- **Balance Retrieval**: Enhanced error handling and contract validation
+- **Wallet Management**: Support for both private keys and seed phrases
+- **Error Handling**: Comprehensive try-catch blocks with detailed logging
+- **UI Enhancements**: Debug buttons and improved status indicators
+
+### Fixed Components:
+- ✅ Auto-Buy Tab: Web3, wallet connection, balance retrieval
+- ✅ Auto-Sales Tab: Enhanced stability and reliability  
+- ✅ Mass Distribution Tab 1: Independent operation
+- ✅ Mass Distribution Tab 2: Independent operation
+- ✅ Mass Distribution Tab 3: Independent operation
+- ✅ All tabs now support simultaneous operation without conflicts
+
 ## v2.1.0 (2025-01-01) - Stability & Parallelism Update
 
 ### Major Features:

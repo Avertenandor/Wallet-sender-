@@ -10,7 +10,7 @@ from typing import Optional
 
 from PyQt5.QtWidgets import (
 	QWidget, QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton,
-	QSpinBox
+	QSpinBox, QDoubleSpinBox
 )
 from PyQt5.QtGui import QFont
 
@@ -71,9 +71,11 @@ class BaseTab(QWidget):
 		layout = QHBoxLayout()
 
 		layout.addWidget(QLabel("Цена газа (Gwei):"))
-		self.gas_price_input = QSpinBox()
-		self.gas_price_input.setRange(1, 1000)
-		self.gas_price_input.setValue(5)
+		self.gas_price_input = QDoubleSpinBox()
+		self.gas_price_input.setRange(0.01, 1000.0)
+		self.gas_price_input.setDecimals(3)
+		self.gas_price_input.setSingleStep(0.1)
+		self.gas_price_input.setValue(0.1)
 		layout.addWidget(self.gas_price_input)
 
 		layout.addWidget(QLabel("Лимит газа:"))
@@ -115,9 +117,9 @@ class BaseTab(QWidget):
 	def get_gas_price_wei(self) -> int:
 		"""Get gas price in Wei from UI settings"""
 		if hasattr(self, 'gas_price_input'):
-			gas_price_gwei = self.gas_price_input.value()
+			gas_price_gwei = float(self.gas_price_input.value())
 			return int(gas_price_gwei * 10**9)  # Convert Gwei to Wei
-		return int(5 * 10**9)  # Default 5 Gwei
+		return int(0.1 * 10**9)  # Default 0.1 Gwei
 	
 	def get_gas_limit(self) -> int:
 		"""Get gas limit from UI settings"""

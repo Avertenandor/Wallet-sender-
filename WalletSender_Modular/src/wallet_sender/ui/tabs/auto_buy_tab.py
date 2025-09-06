@@ -34,16 +34,98 @@ except ImportError:
     Mnemonic = None
     logger.warning("Библиотека mnemonic не установлена. Установите через: pip install mnemonic")
 
-# Адреса токенов и контрактов BSC
+# Адреса токенов и контрактов BSC (checksum)
 CONTRACTS = {
-    'PLEX_ONE': '0xdf179b6cadbc61ffd86a3d2e55f6d6e083ade6c1',
-    'USDT': '0x55d398326f99059ff775485246999027b3197955',
-    'PANCAKE_ROUTER': '0x10ED43C718714eb63d5aA57B78B54704E256024E',
-    'WBNB': '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'
+    'PLEX_ONE': Web3.to_checksum_address('0xdf179b6cadbc61ffd86a3d2e55f6d6e083ade6c1'),
+    'USDT': Web3.to_checksum_address('0x55d398326f99059ff775485246999027b3197955'),
+    'PANCAKE_ROUTER': Web3.to_checksum_address('0x10ED43C718714eb63d5aA57B78B54704E256024E'),
+    'WBNB': Web3.to_checksum_address('0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c')
 }
 
 # ABI для ERC20 токенов
-ERC20_ABI = json.loads('[{"constant":true,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"payable":false,"stateMutability":"view","type":"function"},{"constant":false,"inputs":[{"name":"_spender","type":"address"},{"name":"_value","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"payable":false,"stateMutability":"nonpayable","type":"function"},{"constant":true,"inputs":[],"name":"totalSupply","outputs":[{"name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"},{"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"payable":false,"stateMutability":"view","type":"function"},{"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"},{"constant":true,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"payable":false,"stateMutability":"view","type":"function"},{"constant":false,"inputs":[{"name":"_to","type":"address"},{"name":"_value","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"payable":false,"stateMutability":"nonpayable","type":"function"},{"constant":true,"inputs":[{"name":"_owner","type":"address"},{"name":"_spender","type":"address"}],"name":"allowance","outputs":[{"name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"}]')
+ERC20_ABI = '''[
+    {
+        "constant": true,
+        "inputs": [],
+        "name": "name",
+        "outputs": [{"name": "", "type": "string"}],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "constant": false,
+        "inputs": [
+            {"name": "_spender", "type": "address"},
+            {"name": "_value", "type": "uint256"}
+        ],
+        "name": "approve",
+        "outputs": [{"name": "", "type": "bool"}],
+        "payable": false,
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "constant": true,
+        "inputs": [],
+        "name": "totalSupply",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "constant": true,
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "constant": true,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "constant": true,
+        "inputs": [],
+        "name": "symbol",
+        "outputs": [{"name": "", "type": "string"}],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "constant": false,
+        "inputs": [
+            {"name": "_to", "type": "address"},
+            {"name": "_value", "type": "uint256"}
+        ],
+        "name": "transfer",
+        "outputs": [{"name": "", "type": "bool"}],
+        "payable": false,
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "constant": true,
+        "inputs": [
+            {"name": "_owner", "type": "address"},
+            {"name": "_spender", "type": "address"}
+        ],
+        "name": "allowance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+    }
+]'''
 
 # Минимальный ABI для PancakeSwap Router
 PANCAKE_ROUTER_ABI = json.loads('[{"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokens","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForETH","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactETHForTokens","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"payable","type":"function"},{"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"}],"name":"getAmountsOut","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"view","type":"function"}]')
@@ -80,19 +162,62 @@ class AutoBuyTab(BaseTab):
         logger.info("Вкладка автоматических покупок инициализирована")
         
     def _init_web3(self):
-        """Инициализация Web3 подключения"""
-        try:
-            # BSC Mainnet RPC
-            rpc_url = 'https://bsc-dataseed.binance.org/'
-            self.web3 = Web3(Web3.HTTPProvider(rpc_url))
-            
-            if self.web3.is_connected():
-                self.log("✅ Подключение к BSC установлено", "SUCCESS")
-            else:
-                self.log("❌ Не удалось подключиться к BSC", "ERROR")
+        """Инициализация Web3 подключения с множественными RPC endpoints"""
+        # Список RPC endpoints для надежности
+        rpc_urls = [
+            'https://bsc-dataseed.binance.org/',
+            'https://bsc-dataseed1.defibit.io/',
+            'https://bsc-dataseed1.ninicoin.io/',
+            'https://bsc-dataseed2.defibit.io/',
+            'https://bsc-dataseed3.defibit.io/',
+            'https://bsc-dataseed4.defibit.io/',
+            'https://bsc-dataseed1.binance.org/',
+            'https://bsc-dataseed2.binance.org/',
+            'https://bsc-dataseed3.binance.org/',
+            'https://bsc-dataseed4.binance.org/'
+        ]
+        
+        for rpc_url in rpc_urls:
+            try:
+                self.log(f"🔗 Пробуем подключиться к {rpc_url}", "INFO")
+                self.web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={'timeout': 10}))
                 
+                if self.web3.is_connected():
+                    # Проверяем что можем получить блок
+                    latest_block = self.web3.eth.block_number
+                    self.log(f"✅ Подключен к BSC через {rpc_url} (блок: {latest_block})", "SUCCESS")
+                    
+                    # Инициализируем менеджеры
+                    try:
+                        from ...utils.gas_manager import GasManager
+                        from ...utils.token_safety import TokenSafetyChecker
+                        from ...utils.async_manager import get_async_manager
+                        
+                        self.gas_manager = GasManager(self.web3)
+                        self.safety_checker = TokenSafetyChecker(self.web3)
+                        self.async_manager = get_async_manager(self.web3)
+                        
+                        self.log("✅ Менеджеры инициализированы", "SUCCESS")
+                    except Exception as e:
+                        self.log(f"⚠️ Ошибка инициализации менеджеров: {str(e)}", "WARNING")
+                    
+                    return
+                else:
+                    self.log(f"❌ Не удалось подключиться к {rpc_url}", "ERROR")
+                    
+            except Exception as e:
+                self.log(f"❌ Ошибка подключения к {rpc_url}: {str(e)}", "ERROR")
+                continue
+        
+        # Если ни один RPC не сработал
+        self.log("❌ Не удалось подключиться ни к одному RPC endpoint", "ERROR")
+        # Создаем fallback подключение
+        try:
+            self.web3 = Web3(Web3.HTTPProvider('https://bsc-dataseed.binance.org/'))
+            self.log("⚠️ Создано fallback подключение", "WARNING")
         except Exception as e:
-            self.log(f"❌ Ошибка инициализации Web3: {str(e)}", "ERROR")
+            self.log(f"❌ Ошибка создания fallback подключения: {str(e)}", "ERROR")
+            self.web3 = None
             
     def init_ui(self):
         """Инициализация интерфейса вкладки"""
@@ -165,6 +290,12 @@ class AutoBuyTab(BaseTab):
         self.disconnect_btn.setEnabled(False)
         button_layout.addWidget(self.disconnect_btn)
         
+        # Кнопка диагностики баланса
+        self.debug_balance_btn = QPushButton("🔍 Диагностика баланса")
+        self.debug_balance_btn.clicked.connect(self.debug_balance)
+        self.debug_balance_btn.setEnabled(False)
+        button_layout.addWidget(self.debug_balance_btn)
+        
         layout.addLayout(button_layout)
         
         # Отображение адреса кошелька
@@ -198,8 +329,26 @@ class AutoBuyTab(BaseTab):
         
         # Кнопка обновления балансов
         self.refresh_btn = QPushButton("🔄 Обновить балансы")
-        self.refresh_btn.clicked.connect(self.update_balances)
+        self.refresh_btn.clicked.connect(self.refresh_all_balances)
         self.refresh_btn.setEnabled(False)
+        self.refresh_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1e3a8a;
+                border: 1px solid #3b82f6;
+                border-radius: 5px;
+                padding: 8px;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #1e40af;
+                border-color: #60a5fa;
+            }
+            QPushButton:pressed {
+                background-color: #1e3a8a;
+            }
+        """)
         layout.addWidget(self.refresh_btn, 3, 0, 1, 2)
         
         # Авто-обновление
@@ -341,25 +490,42 @@ class AutoBuyTab(BaseTab):
             return
             
         try:
-            if self.seed_radio.isChecked():
-                # Обработка SEED фразы
-                if Mnemonic is None:
-                    QMessageBox.critical(self, "Ошибка", "Библиотека mnemonic не установлена!\nУстановите: pip install mnemonic")
-                    return
+            # Определяем тип входных данных
+            if ' ' in wallet_data:  # SEED фраза
                     
-                words = wallet_data.split()
-                if len(words) not in [12, 24]:
-                    QMessageBox.warning(self, "Ошибка", "SEED фраза должна содержать 12 или 24 слова!")
+                # Предпочитаем корректную деривацию по BIP44: m/44'/60'/0'/0/0
+                account_path = "m/44'/60'/0'/0/0"
+                created = False
+                # 1) Пытаемся через eth_account (предпочтительно, без доп. зависимостей)
+                if hasattr(Account, 'from_mnemonic'):
+                    try:
+                        self.account = Account.from_mnemonic(wallet_data, account_path=account_path)  # type: ignore[arg-type]
+                        created = True
+                    except Exception:
+                        created = False
+                # 2) Фолбэк через библиотеку mnemonic + bip_utils (если установлена)
+                if not created:
+                    try:
+                        from mnemonic import Mnemonic
+                        from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes  # type: ignore[import]
+                        mnemo = Mnemonic("english")
+                        if not mnemo.check(wallet_data):
+                            raise ValueError("Неверная SEED фраза")
+                        seed_bytes = Bip39SeedGenerator(wallet_data).Generate()
+                        bip44_ctx = Bip44.FromSeed(seed_bytes, Bip44Coins.ETHEREUM).Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
+                        private_key = bip44_ctx.PrivateKey().Raw().ToHex()
+                        self.account = Account.from_key(private_key)
+                        created = True
+                    except Exception:
+                        created = False
+                # 3) Если ничего не вышло — просим ввести приватный ключ, чтобы избежать неверного адреса
+                if not created:
+                    QMessageBox.critical(
+                        self,
+                        "Ошибка",
+                        "Не удалось создать кошелек из SEED фразы. Введите приватный ключ или установите зависимости: mnemonic, bip_utils."
+                    )
                     return
-                    
-                mnemo = Mnemonic("english")
-                if not mnemo.check(wallet_data):
-                    QMessageBox.warning(self, "Ошибка", "Неверная SEED фраза!")
-                    return
-                    
-                seed = mnemo.to_seed(wallet_data)
-                private_key = seed[:32].hex()
-                self.account = Account.from_key(private_key)
             else:
                 # Обработка приватного ключа
                 private_key = wallet_data
@@ -373,6 +539,7 @@ class AutoBuyTab(BaseTab):
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
             self.refresh_btn.setEnabled(True)
+            self.debug_balance_btn.setEnabled(True)
             self.start_btn.setEnabled(True)
             
             self.log(f"✅ Кошелек подключен: {self.account.address}", "SUCCESS")
@@ -400,6 +567,7 @@ class AutoBuyTab(BaseTab):
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
+        self.debug_balance_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
         
         # Очищаем балансы
@@ -413,6 +581,180 @@ class AutoBuyTab(BaseTab):
         
         self.log("🔌 Кошелек отключен", "INFO")
         
+    def refresh_all_balances(self):
+        """Обновляет все балансы токенов с детальным логированием"""
+        self.log("🔄 Обновляем балансы всех токенов...", "INFO")
+        
+        if not self.account:
+            self.log("❌ Кошелек не подключен", "ERROR")
+            return
+            
+        try:
+            # Проверяем и обновляем Web3 подключение
+            if not self.web3 or not self.web3.is_connected():
+                self.log("⚠️ Web3 не подключен, переподключаемся...", "WARNING")
+                self._init_web3()
+            
+        # Обновляем BNB баланс
+        try:
+            checksum_address = Web3.to_checksum_address(self.account.address)
+            bnb_balance = self.web3.eth.get_balance(checksum_address)
+            bnb_formatted = self.web3.from_wei(bnb_balance, 'ether')
+            self.bnb_balance_label.setText(f"{bnb_formatted:.6f}")
+            self.log(f"💰 BNB баланс: {bnb_formatted:.6f}", "SUCCESS")
+        except Exception as e:
+            self.bnb_balance_label.setText("Ошибка")
+            self.log(f"❌ Ошибка получения BNB баланса: {e}", "ERROR")
+        
+        # Обновляем PLEX ONE баланс
+        try:
+            plex_balance = self._get_token_balance(CONTRACTS['PLEX_ONE'])
+            self.plex_balance_label.setText(f"{plex_balance:.6f}")
+            if plex_balance > 0:
+                self.log(f"💰 PLEX ONE баланс: {plex_balance:.6f}", "SUCCESS")
+        except Exception as e:
+            self.plex_balance_label.setText("Ошибка")
+            self.log(f"❌ Ошибка получения PLEX ONE баланса: {e}", "ERROR")
+        
+        # Обновляем USDT баланс
+        try:
+            usdt_balance = self._get_token_balance(CONTRACTS['USDT'])
+            self.usdt_balance_label.setText(f"{usdt_balance:.6f}")
+            if usdt_balance > 0:
+                self.log(f"💰 USDT баланс: {usdt_balance:.6f}", "SUCCESS")
+        except Exception as e:
+            self.usdt_balance_label.setText("Ошибка")
+            self.log(f"❌ Ошибка получения USDT баланса: {e}", "ERROR")
+        
+        self.log("✅ Обновление балансов завершено", "SUCCESS")
+        
+        except Exception as e:
+            self.log(f"❌ Критическая ошибка обновления балансов: {str(e)}", "ERROR")
+            QMessageBox.warning(self, "Ошибка", f"Не удалось обновить балансы:\n{str(e)}")
+
+    def debug_balance(self):
+        """Диагностика баланса токенов"""
+        self.log("🔍 === ДИАГНОСТИКА БАЛАНСА ===", "INFO")
+        
+        if not self.account:
+            self.log("❌ Кошелек не подключен", "ERROR")
+            return
+            
+        self.log(f"✅ Кошелек подключен: {self.account.address}", "SUCCESS")
+        
+        if not self.web3:
+            self.log("❌ Web3 не подключен", "ERROR")
+            return
+            
+        self.log("✅ Web3 подключен к BSC", "SUCCESS")
+        
+        # BNB баланс
+        try:
+            checksum_address = Web3.to_checksum_address(self.account.address)
+            bnb_balance = self.web3.eth.get_balance(checksum_address)
+            bnb_formatted = self.web3.from_wei(bnb_balance, 'ether')
+            self.log(f"💰 BNB баланс: {bnb_formatted:.6f}", "SUCCESS")
+        except Exception as e:
+            self.log(f"❌ Ошибка получения BNB баланса: {e}", "ERROR")
+        
+        # PLEX ONE баланс
+        try:
+            self.log(f"🔍 Проверяем токен: PLEX ONE ({CONTRACTS['PLEX_ONE']})", "INFO")
+            plex_checksum = Web3.to_checksum_address(CONTRACTS['PLEX_ONE'])
+            contract_code = self.web3.eth.get_code(plex_checksum)
+            if contract_code and contract_code != b'':
+                plex_contract = self.web3.eth.contract(address=plex_checksum, abi=ERC20_ABI)
+                plex_balance_raw = plex_contract.functions.balanceOf(checksum_address).call()
+                plex_decimals = plex_contract.functions.decimals().call()
+                plex_balance = plex_balance_raw / (10 ** plex_decimals)
+                self.log(f"✅ Баланс PLEX ONE: {plex_balance:.6f}", "SUCCESS")
+            else:
+                self.log(f"❌ Контракт PLEX ONE не найден", "ERROR")
+        except Exception as e:
+            self.log(f"❌ Ошибка получения PLEX ONE баланса: {e}", "ERROR")
+        
+        # USDT баланс
+        try:
+            self.log(f"🔍 Проверяем токен: USDT ({CONTRACTS['USDT']})", "INFO")
+            usdt_checksum = Web3.to_checksum_address(CONTRACTS['USDT'])
+            contract_code = self.web3.eth.get_code(usdt_checksum)
+            if contract_code and contract_code != b'':
+                usdt_contract = self.web3.eth.contract(address=usdt_checksum, abi=ERC20_ABI)
+                usdt_balance_raw = usdt_contract.functions.balanceOf(checksum_address).call()
+                usdt_decimals = usdt_contract.functions.decimals().call()
+                usdt_balance = usdt_balance_raw / (10 ** usdt_decimals)
+                self.log(f"✅ Баланс USDT: {usdt_balance:.6f}", "SUCCESS")
+            else:
+                self.log(f"❌ Контракт USDT не найден", "ERROR")
+        except Exception as e:
+            self.log(f"❌ Ошибка получения USDT баланса: {e}", "ERROR")
+        
+        self.log("🔍 === КОНЕЦ ДИАГНОСТИКИ ===", "INFO")
+
+    def _get_token_balance(self, token_address: str) -> float:
+        """Получение баланса токена с полной проверкой"""
+        try:
+            if not self.account or not self.web3:
+                self.log("❌ Кошелек или Web3 не подключен", "ERROR")
+                return 0
+            
+            # Проверяем подключение к сети
+            if not self.web3.is_connected():
+                self.log("❌ Нет подключения к BSC сети", "ERROR")
+                return 0
+            
+            # Проверяем адрес токена
+            if not Web3.is_address(token_address):
+                self.log(f"❌ Неверный адрес токена: {token_address}", "ERROR")
+                return 0
+            
+            # Проверяем, что адрес токена валидный
+            checksum_address = Web3.to_checksum_address(token_address)
+            
+            # Проверяем, что контракт существует
+            try:
+                code = self.web3.eth.get_code(checksum_address)
+                if code == b'':
+                    self.log(f"❌ Контракт не найден по адресу: {checksum_address}", "ERROR")
+                    return 0
+            except Exception as e:
+                self.log(f"❌ Ошибка проверки контракта: {str(e)}", "ERROR")
+                return 0
+            
+            # Создаем контракт
+            token_contract = self.web3.eth.contract(
+                address=checksum_address,
+                abi=ERC20_ABI
+            )
+            
+            # Получаем decimals
+            try:
+                decimals = token_contract.functions.decimals().call()
+            except Exception as e:
+                self.log(f"❌ Ошибка получения decimals: {str(e)}", "ERROR")
+                decimals = 18  # Fallback на стандартные 18 decimals
+            
+            # Получаем баланс
+            wallet_address = Web3.to_checksum_address(self.account.address)
+            try:
+                balance = token_contract.functions.balanceOf(wallet_address).call()
+            except Exception as e:
+                self.log(f"❌ Ошибка получения баланса: {str(e)}", "ERROR")
+                return 0
+            
+            # Конвертируем в читаемый формат
+            formatted_balance = balance / (10 ** decimals)
+            
+            # Логируем только если баланс больше 0 или есть ошибки
+            if formatted_balance > 0:
+                self.log(f"✅ Баланс {checksum_address[:10]}...: {formatted_balance:.6f}", "SUCCESS")
+            
+            return formatted_balance
+            
+        except Exception as e:
+            self.log(f"❌ Критическая ошибка получения баланса токена: {str(e)}", "ERROR")
+            return 0
+
     def update_balances(self):
         """Обновление балансов токенов"""
         if not self.account or not self.web3:
@@ -428,7 +770,7 @@ class AutoBuyTab(BaseTab):
             # Получаем баланс PLEX ONE
             try:
                 plex_contract = self.web3.eth.contract(
-                    address=Web3.to_checksum_address(CONTRACTS['PLEX_ONE']),
+                    address=CONTRACTS['PLEX_ONE'],
                     abi=ERC20_ABI
                 )
                 plex_balance_raw = plex_contract.functions.balanceOf(address).call()
@@ -441,7 +783,7 @@ class AutoBuyTab(BaseTab):
             # Получаем баланс USDT
             try:
                 usdt_contract = self.web3.eth.contract(
-                    address=Web3.to_checksum_address(CONTRACTS['USDT']),
+                    address=CONTRACTS['USDT'],
                     abi=ERC20_ABI
                 )
                 usdt_balance_raw = usdt_contract.functions.balanceOf(address).call()
@@ -568,9 +910,83 @@ class AutoBuyTab(BaseTab):
             self.stop_btn.setEnabled(False)
             self.log(f"🏁 Автоматические покупки завершены. Выполнено: {completed_buys}/{max_buys}", "SUCCESS")
             
-    def _execute_buy(self) -> Dict[str, Any]:
-        """Выполнение одной покупки через PancakeSwap"""
+    def _retry_call(self, func, max_retries: int = 3, delay: float = 2.0):
+        """Универсальная функция retry для вызовов"""
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                return func()
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    self.log(f"⚠️ Попытка {attempt + 1}/{max_retries} не удалась: {e}", "WARNING")
+                    self.log(f"🔄 Повторная попытка через {delay} секунд...", "INFO")
+                    time.sleep(delay * (attempt + 1))  # Экспоненциальная задержка
+                    
+        raise last_error
+
+    def _get_amounts_out_with_retry(self, amount_in: int, path: List[str]) -> List[int]:
+        """Получает ожидаемое количество токенов на выходе с retry"""
+        def _get():
+            path_checksum = [Web3.to_checksum_address(addr) for addr in path]
+            router_contract = self.web3.eth.contract(
+                address=CONTRACTS['PANCAKE_ROUTER'],
+                abi=PANCAKE_ROUTER_ABI
+            )
+            return router_contract.functions.getAmountsOut(amount_in, path_checksum).call()
+        
+        return self._retry_call(_get, max_retries=3, delay=2.0)
+
+    def _validate_buy_params(self, token_address: str, amount: float, buy_with: str) -> Dict[str, Any]:
+        """Валидирует параметры покупки перед выполнением"""
         try:
+            # Проверка подключения
+            if not self.web3 or not self.web3.is_connected():
+                raise Exception("Нет подключения к блокчейну")
+                
+            # Проверка кошелька
+            if not self.account:
+                raise Exception("Кошелек не подключен")
+                
+            # Проверка адреса токена
+            if not token_address or not token_address.startswith('0x'):
+                raise ValueError("Неверный адрес токена")
+                
+            # Проверка суммы
+            if amount <= 0:
+                raise ValueError("Сумма должна быть больше 0")
+                
+            # Проверка баланса для покупки
+            if buy_with == 'BNB':
+                bnb_balance = self.web3.eth.get_balance(self.account.address)
+                bnb_balance_eth = self.web3.from_wei(bnb_balance, 'ether')
+                if bnb_balance_eth < amount:
+                    raise ValueError(f"Недостаточно BNB. Баланс: {bnb_balance_eth:.6f}, требуется: {amount}")
+            else:  # USDT
+                usdt_contract = self.web3.eth.contract(address=CONTRACTS['USDT'], abi=ERC20_ABI)
+                usdt_balance_wei = usdt_contract.functions.balanceOf(self.account.address).call()
+                usdt_balance = usdt_balance_wei / (10 ** 6)  # USDT decimals
+                if usdt_balance < amount:
+                    raise ValueError(f"Недостаточно USDT. Баланс: {usdt_balance:.4f}, требуется: {amount}")
+                
+            return {
+                'valid': True,
+                'bnb_balance': bnb_balance_eth if buy_with == 'BNB' else None,
+                'usdt_balance': usdt_balance if buy_with == 'USDT' else None
+            }
+            
+        except Exception as e:
+            return {
+                'valid': False,
+                'error': str(e)
+            }
+
+    def _execute_buy(self) -> Dict[str, Any]:
+        """Выполнение одной покупки через PancakeSwap с улучшенной обработкой ошибок"""
+        try:
+            self.log("=== Начало операции покупки ===", "INFO")
+            
             if not self.account or not self.web3:
                 return {
                     'success': False,
@@ -607,10 +1023,38 @@ class AutoBuyTab(BaseTab):
                 self.log("❌ Нельзя покупать USDT за USDT", "ERROR")
                 return {'success': False, 'error': 'Нельзя покупать тот же токен которым платите'}
             
+            # Валидация параметров покупки
+            validation = self._validate_buy_params(token_address, buy_amount, buy_with)
+            if not validation['valid']:
+                self.log(f"❌ Ошибка валидации: {validation['error']}", "ERROR")
+                return {'success': False, 'error': validation['error']}
+            
+            # Проверяем ликвидность перед покупкой
+            self.log("🔍 Проверяем ликвидность пула...", "INFO")
+            try:
+                if buy_with == 'BNB':
+                    amount_wei = self.web3.to_wei(buy_amount, 'ether')
+                    path = [CONTRACTS['WBNB'], Web3.to_checksum_address(token_address)]
+                else:  # USDT
+                    amount_wei = int(buy_amount * (10 ** 6))  # USDT decimals
+                    path = [CONTRACTS['USDT'], Web3.to_checksum_address(token_address)]
+                
+                amounts_out = self._get_amounts_out_with_retry(amount_wei, path)
+                if not amounts_out or amounts_out[-1] == 0:
+                    self.log("❌ Недостаточная ликвидность для покупки", "ERROR")
+                    return {'success': False, 'error': 'Недостаточная ликвидность пула'}
+                
+                expected_tokens = amounts_out[-1] / (10 ** 9) if selected_token == 'PLEX ONE' else amounts_out[-1] / (10 ** 18)
+                self.log(f"🔍 Ожидается получить: {expected_tokens:.6f} {selected_token}", "INFO")
+                
+            except Exception as e:
+                self.log(f"⚠️ Ошибка проверки ликвидности: {e}", "WARNING")
+                self.log("⚠️ Продолжаем покупку без проверки ликвидности", "WARNING")
+            
             self.log(f"🛒 Выполняется реальная покупка {selected_token} за {buy_with} через PancakeSwap...", "INFO")
             
             # Создаем контракт PancakeSwap Router
-            router_address = Web3.to_checksum_address('0x10ED43C718714eb63d5aA57B78B54704E256024E')
+            router_address = CONTRACTS['PANCAKE_ROUTER']
             self.log(f"📋 PancakeSwap Router: {router_address}", "INFO")
             
             # Параметры транзакции
@@ -640,11 +1084,19 @@ class AutoBuyTab(BaseTab):
                 )
                 
                 # Создаем путь обмена: BNB -> Token
-                path = [
-                    Web3.to_checksum_address('0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'),  # WBNB
-                    Web3.to_checksum_address(token_address)
-                ]
-                self.log(f"🔄 Путь обмена: WBNB -> {selected_token}", "INFO")
+                # Для PLEX ONE используем прямой путь к WBNB
+                if token_address.lower() == CONTRACTS['PLEX_ONE'].lower():
+                    path = [
+                        CONTRACTS['WBNB'],  # WBNB
+                        CONTRACTS['PLEX_ONE']  # PLEX ONE
+                    ]
+                    self.log(f"🔄 Путь обмена: WBNB -> PLEX ONE (прямой)", "INFO")
+                else:
+                    path = [
+                        CONTRACTS['WBNB'],  # WBNB
+                        Web3.to_checksum_address(token_address)
+                    ]
+                    self.log(f"🔄 Путь обмена: WBNB -> {selected_token}", "INFO")
                 
                 amount_wei = self.web3.to_wei(buy_amount, 'ether')
                 self.log(f"💰 Сумма в wei: {amount_wei} ({buy_amount} BNB)", "INFO")
@@ -668,12 +1120,13 @@ class AutoBuyTab(BaseTab):
                 # Покупка за USDT (Token -> Token)
                 
                 # Сначала нужно сделать approve для USDT
-                usdt_address = Web3.to_checksum_address(CONTRACTS['USDT'])
+                usdt_address = CONTRACTS['USDT']
                 self.log(f"📋 USDT адрес: {usdt_address}", "INFO")
                 erc20_abi = json.loads('[{"constant":false,"inputs":[{"name":"_spender","type":"address"},{"name":"_value","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"payable":false,"stateMutability":"nonpayable","type":"function"}]')
                 
                 usdt_contract = self.web3.eth.contract(address=usdt_address, abi=erc20_abi)
-                amount_in_units = int(buy_amount * (10 ** 18))
+                # USDT имеет 6 decimals, не 18
+                amount_in_units = int(buy_amount * (10 ** 6))
                 
                 # Approve транзакция
                 self.log("📝 Делаем approve для USDT...", "INFO")
@@ -687,11 +1140,25 @@ class AutoBuyTab(BaseTab):
                     'nonce': self.web3.eth.get_transaction_count(self.account.address)
                 })
                 
-                # Подписываем и отправляем approve
+                # Подписываем и отправляем approve с retry
+                self.log("📤 Отправка approve транзакции...", "INFO")
                 signed_approve = self.web3.eth.account.sign_transaction(approve_tx, self.account.key)
                 approve_hash = self.web3.eth.send_raw_transaction(signed_approve.rawTransaction)
-                approve_receipt = self.web3.eth.wait_for_transaction_receipt(approve_hash, timeout=120)
-                self.log("✅ Approve успешно завершен", "INFO")
+                
+                if not approve_hash:
+                    raise Exception("Не удалось отправить approve транзакцию")
+                    
+                self.log(f"📤 Approve транзакция отправлена: {approve_hash.hex()}", "INFO")
+                self.log(f"🔗 Ссылка: https://bscscan.com/tx/{approve_hash.hex()}", "INFO")
+                
+                # Ждем подтверждения с таймаутом
+                self.log("⏳ Ожидание подтверждения approve...", "INFO")
+                approve_receipt = self.web3.eth.wait_for_transaction_receipt(approve_hash, timeout=180)
+                
+                if approve_receipt and approve_receipt['status'] == 1:
+                    self.log(f"✅ Approve успешно завершен. Gas used: {approve_receipt['gasUsed']}", "SUCCESS")
+                else:
+                    raise Exception("Approve транзакция провалилась")
                 
                 # Небольшая пауза для обновления nonce в сети
                 time.sleep(1)
@@ -723,10 +1190,19 @@ class AutoBuyTab(BaseTab):
                 )
                 
                 # Создаем путь обмена: USDT -> Token
-                path = [
-                    usdt_address,  # USDT
-                    Web3.to_checksum_address(token_address)
-                ]
+                # Для PLEX ONE используем прямой путь к USDT
+                if token_address.lower() == CONTRACTS['PLEX_ONE'].lower():
+                    path = [
+                        CONTRACTS['USDT'],  # USDT
+                        CONTRACTS['PLEX_ONE']  # PLEX ONE
+                    ]
+                    self.log(f"🔄 Путь обмена: USDT -> PLEX ONE (прямой)", "INFO")
+                else:
+                    path = [
+                        usdt_address,  # USDT
+                        Web3.to_checksum_address(token_address)
+                    ]
+                    self.log(f"🔄 Путь обмена: USDT -> {selected_token}", "INFO")
                 
                 # Создаем транзакцию (с обновленным nonce после approve)
                 transaction = router_contract.functions.swapExactTokensForTokens(
@@ -743,30 +1219,58 @@ class AutoBuyTab(BaseTab):
                 })
             
             # Подписываем и отправляем транзакцию
+            self.log(f"📤 Отправка swap транзакции: {buy_amount} {buy_with} -> {selected_token}", "INFO")
+            self.log(f"🔍 Gas limit: {transaction['gas']}, Gas price: {transaction['gasPrice']}", "INFO")
+            
             signed_txn = self.web3.eth.account.sign_transaction(transaction, self.account.key)
             tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
             
-            # Ждем подтверждения
-            self.log(f"⏳ Ожидание подтверждения транзакции: {tx_hash.hex()}", "INFO")
-            tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            if not tx_hash:
+                raise Exception("Не удалось отправить swap транзакцию")
+                
+            self.log(f"📤 Swap транзакция отправлена: {tx_hash.hex()}", "INFO")
+            self.log(f"🔗 Ссылка: https://bscscan.com/tx/{tx_hash.hex()}", "INFO")
             
-            if tx_receipt['status'] == 1:
-                self.log(f"✅ Покупка успешно завершена! Tx: {tx_hash.hex()}", "SUCCESS")
+            # Ждем подтверждения
+            self.log("⏳ Ожидание подтверждения транзакции...", "INFO")
+            tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+            
+            if tx_receipt and tx_receipt['status'] == 1:
+                gas_used = tx_receipt['gasUsed']
+                gas_cost_bnb = self.web3.from_wei(gas_used * transaction['gasPrice'], 'ether')
+                
+                self.log(f"✅ Покупка успешно завершена!", "SALE")
+                self.log(f"🔍 Gas used: {gas_used}", "INFO")
+                self.log(f"💰 Стоимость газа: {gas_cost_bnb:.6f} BNB", "INFO")
+                
+                # Проверяем новый баланс с задержкой
+                time.sleep(3)
+                token_contract = self.web3.eth.contract(address=token_address, abi=ERC20_ABI)
+                new_balance_wei = token_contract.functions.balanceOf(self.account.address).call()
+                decimals = token_contract.functions.decimals().call()
+                new_balance = new_balance_wei / (10 ** decimals)
+                self.log(f"💰 Новый баланс {selected_token}: {new_balance:.6f}", "PROFIT")
+                
                 return {
                     'success': True,
                     'tx_hash': tx_hash.hex(),
                     'amount_spent': buy_amount,
-                    'gas_used': tx_receipt['gasUsed']
+                    'gas_used': gas_used,
+                    'tokens_bought': new_balance
                 }
             else:
-                self.log("❌ Транзакция отклонена сетью", "ERROR")
+                self.log("❌ Swap транзакция провалилась", "ERROR")
+                if tx_receipt:
+                    self.log(f"❌ Receipt status: {tx_receipt.get('status')}", "ERROR")
+                    if 'logs' in tx_receipt and tx_receipt['logs']:
+                        self.log(f"❌ Logs: {tx_receipt['logs']}", "ERROR")
                 return {
                     'success': False,
                     'error': 'Транзакция отклонена'
                 }
             
         except Exception as e:
-            self.log(f"❌ Ошибка выполнения покупки: {str(e)}", "ERROR")
+            self.log(f"❌ Критическая ошибка при покупке: {str(e)}", "ERROR")
             return {
                 'success': False,
                 'error': str(e)

@@ -200,7 +200,7 @@ class SettingsTab(BaseTab):
         self.gas_price_gwei.setRange(0.01, 1000.0)
         self.gas_price_gwei.setDecimals(3)
         self.gas_price_gwei.setSingleStep(0.1)
-        self.gas_price_gwei.setValue(5.0)
+        self.gas_price_gwei.setValue(0.1)
         self.gas_price_gwei.setSuffix(" Gwei")
         layout.addRow("Цена газа:", self.gas_price_gwei)
 

@@ -93,19 +93,47 @@ class MassDistributionTab(BaseTab):
         self._init_web3()
         
     def _init_web3(self):
-        """Инициализация Web3 подключения"""
-        try:
-            # BSC Mainnet RPC
-            rpc_url = 'https://bsc-dataseed.binance.org/'
-            self.web3 = Web3(Web3.HTTPProvider(rpc_url))
-            
-            if self.web3.is_connected():
-                self.log("✅ Подключение к BSC установлено", "SUCCESS")
-            else:
-                self.log("❌ Не удалось подключиться к BSC", "ERROR")
+        """Инициализация Web3 подключения с множественными RPC endpoints"""
+        # Список RPC endpoints для надежности
+        rpc_urls = [
+            'https://bsc-dataseed.binance.org/',
+            'https://bsc-dataseed1.defibit.io/',
+            'https://bsc-dataseed1.ninicoin.io/',
+            'https://bsc-dataseed2.defibit.io/',
+            'https://bsc-dataseed3.defibit.io/',
+            'https://bsc-dataseed4.defibit.io/',
+            'https://bsc-dataseed1.binance.org/',
+            'https://bsc-dataseed2.binance.org/',
+            'https://bsc-dataseed3.binance.org/',
+            'https://bsc-dataseed4.binance.org/'
+        ]
+        
+        for rpc_url in rpc_urls:
+            try:
+                self.log(f"🔗 Пробуем подключиться к {rpc_url}", "INFO")
+                self.web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={'timeout': 10}))
                 
+                if self.web3.is_connected():
+                    # Проверяем что можем получить блок
+                    latest_block = self.web3.eth.block_number
+                    self.log(f"✅ Подключен к BSC через {rpc_url} (блок: {latest_block})", "SUCCESS")
+                    return
+                else:
+                    self.log(f"❌ Не удалось подключиться к {rpc_url}", "ERROR")
+                    
+            except Exception as e:
+                self.log(f"❌ Ошибка подключения к {rpc_url}: {str(e)}", "ERROR")
+                continue
+        
+        # Если ни один RPC не сработал
+        self.log("❌ Не удалось подключиться ни к одному RPC endpoint", "ERROR")
+        # Создаем fallback подключение
+        try:
+            self.web3 = Web3(Web3.HTTPProvider('https://bsc-dataseed.binance.org/'))
+            self.log("⚠️ Создано fallback подключение", "WARNING")
         except Exception as e:
-            self.log(f"❌ Ошибка инициализации Web3: {str(e)}", "ERROR")
+            self.log(f"❌ Ошибка создания fallback подключения: {str(e)}", "ERROR")
+            self.web3 = None
     
     def init_ui(self):
         """Инициализация интерфейса"""
@@ -623,6 +651,12 @@ class MassDistributionTab(BaseTab):
         self.disconnect_btn.setEnabled(False)
         button_layout.addWidget(self.disconnect_btn)
         
+        # Кнопка диагностики баланса
+        self.debug_balance_btn = QPushButton("🔍 Диагностика баланса")
+        self.debug_balance_btn.clicked.connect(self.debug_balance)
+        self.debug_balance_btn.setEnabled(False)
+        button_layout.addWidget(self.debug_balance_btn)
+        
         layout.addLayout(button_layout)
         
         # Отображение адреса кошелька
@@ -682,35 +716,50 @@ class MassDistributionTab(BaseTab):
             return
             
         try:
-            if self.seed_radio.isChecked():
-                # Подключение через SEED фразу
-                if not Mnemonic:
-                    self.log("❌ Библиотека mnemonic не установлена", "ERROR")
+            # Определяем тип входных данных
+            if ' ' in wallet_input:  # SEED фраза
+                # Предпочитаем корректную деривацию по BIP44: m/44'/60'/0'/0/0
+                account_path = "m/44'/60'/0'/0/0"
+                created = False
+                # 1) Пытаемся через eth_account (предпочтительно, без доп. зависимостей)
+                if hasattr(Account, 'from_mnemonic'):
+                    try:
+                        self.account = Account.from_mnemonic(wallet_input, account_path=account_path)  # type: ignore[arg-type]
+                        created = True
+                    except Exception:
+                        created = False
+                # 2) Фолбэк через библиотеку mnemonic + bip_utils (если установлена)
+                if not created:
+                    try:
+                        from mnemonic import Mnemonic
+                        from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes  # type: ignore[import]
+                        mnemo = Mnemonic("english")
+                        if not mnemo.check(wallet_input):
+                            raise ValueError("Неверная SEED фраза")
+                        seed_bytes = Bip39SeedGenerator(wallet_input).Generate()
+                        bip44_ctx = Bip44.FromSeed(seed_bytes, Bip44Coins.ETHEREUM).Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
+                        private_key = bip44_ctx.PrivateKey().Raw().ToHex()
+                        self.account = Account.from_key(private_key)
+                        created = True
+                    except Exception:
+                        created = False
+                # 3) Если ничего не вышло — просим ввести приватный ключ, чтобы избежать неверного адреса
+                if not created:
+                    self.log("❌ Не удалось создать кошелек из SEED фразы. Введите приватный ключ или установите зависимости: mnemonic, bip_utils.", "ERROR")
                     return
-                    
-                mnemo = Mnemonic("english")
-                if not mnemo.check(wallet_input):
-                    self.log("❌ Неверная SEED фраза", "ERROR")
-                    return
-                    
-                # Получение приватного ключа из seed
-                seed = mnemo.to_seed(wallet_input)
-                private_key = seed[:32].hex()
-                
-            else:
-                # Подключение через приватный ключ
+            else:  # Приватный ключ
                 private_key = wallet_input
                 if private_key.startswith('0x'):
                     private_key = private_key[2:]
-                    
-            # Создание аккаунта
-            self.account = Account.from_key(private_key)
+                # Создаем аккаунт из приватного ключа
+                self.account = Account.from_key(private_key)
             
             # Обновление интерфейса
             self.wallet_address_label.setText(f"Адрес: {self.account.address}")
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
             self.refresh_btn.setEnabled(True)
+            self.debug_balance_btn.setEnabled(True)
             
             self.log(f"✅ Кошелек подключен: {self.account.address}", "SUCCESS")
             
@@ -735,6 +784,7 @@ class MassDistributionTab(BaseTab):
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
+        self.debug_balance_btn.setEnabled(False)
         
         # Сброс балансов
         self.bnb_balance_label.setText("0.0")
@@ -749,29 +799,52 @@ class MassDistributionTab(BaseTab):
             return
             
         try:
-            address = self.account.address
+            # Проверяем и обновляем Web3 подключение
+            if not self.web3 or not self.web3.is_connected():
+                self.log("⚠️ Web3 не подключен, переподключаемся...", "WARNING")
+                self._init_web3()
+            
+            checksum_address = Web3.to_checksum_address(self.account.address)
             
             # Получение баланса BNB
-            bnb_balance = self.web3.eth.get_balance(address)
+            bnb_balance = self.web3.eth.get_balance(checksum_address)
             bnb_formatted = self.web3.from_wei(bnb_balance, 'ether')
             
             # Получение баланса PLEX ONE
-            plex_contract = self.web3.eth.contract(
-                address=Web3.to_checksum_address(CONTRACTS['PLEX_ONE']),
-                abi=ERC20_ABI
-            )
-            plex_balance = plex_contract.functions.balanceOf(address).call()
-            plex_decimals = plex_contract.functions.decimals().call()
-            plex_formatted = plex_balance / (10 ** plex_decimals)
+            try:
+                plex_checksum = Web3.to_checksum_address(CONTRACTS['PLEX_ONE'])
+                
+                # Проверяем что контракт существует
+                contract_code = self.web3.eth.get_code(plex_checksum)
+                if not contract_code or contract_code == b'':
+                    self.log(f"❌ Контракт PLEX ONE не найден по адресу {plex_checksum}", "ERROR")
+                    plex_formatted = 0
+                else:
+                    plex_contract = self.web3.eth.contract(address=plex_checksum, abi=ERC20_ABI)
+                    plex_balance = plex_contract.functions.balanceOf(checksum_address).call()
+                    plex_decimals = plex_contract.functions.decimals().call()
+                    plex_formatted = plex_balance / (10 ** plex_decimals)
+            except Exception as e:
+                self.log(f"❌ Ошибка получения PLEX ONE баланса: {str(e)}", "ERROR")
+                plex_formatted = 0
             
             # Получение баланса USDT
-            usdt_contract = self.web3.eth.contract(
-                address=Web3.to_checksum_address(CONTRACTS['USDT']),
-                abi=ERC20_ABI
-            )
-            usdt_balance = usdt_contract.functions.balanceOf(address).call()
-            usdt_decimals = usdt_contract.functions.decimals().call()
-            usdt_formatted = usdt_balance / (10 ** usdt_decimals)
+            try:
+                usdt_checksum = Web3.to_checksum_address(CONTRACTS['USDT'])
+                
+                # Проверяем что контракт существует
+                contract_code = self.web3.eth.get_code(usdt_checksum)
+                if not contract_code or contract_code == b'':
+                    self.log(f"❌ Контракт USDT не найден по адресу {usdt_checksum}", "ERROR")
+                    usdt_formatted = 0
+                else:
+                    usdt_contract = self.web3.eth.contract(address=usdt_checksum, abi=ERC20_ABI)
+                    usdt_balance = usdt_contract.functions.balanceOf(checksum_address).call()
+                    usdt_decimals = usdt_contract.functions.decimals().call()
+                    usdt_formatted = usdt_balance / (10 ** usdt_decimals)
+            except Exception as e:
+                self.log(f"❌ Ошибка получения USDT баланса: {str(e)}", "ERROR")
+                usdt_formatted = 0
             
             # Сохранение балансов
             self.balances = {
@@ -786,6 +859,65 @@ class MassDistributionTab(BaseTab):
         except Exception as e:
             logger.error(f"Ошибка обновления балансов: {e}")
             self.log(f"❌ Ошибка обновления балансов: {str(e)}", "ERROR")
+
+    def debug_balance(self):
+        """Диагностика баланса токенов"""
+        self.log("🔍 === ДИАГНОСТИКА БАЛАНСА ===", "INFO")
+        
+        if not self.account:
+            self.log("❌ Кошелек не подключен", "ERROR")
+            return
+            
+        self.log(f"✅ Кошелек подключен: {self.account.address}", "SUCCESS")
+        
+        if not self.web3:
+            self.log("❌ Web3 не подключен", "ERROR")
+            return
+            
+        self.log("✅ Web3 подключен к BSC", "SUCCESS")
+        
+        # BNB баланс
+        try:
+            checksum_address = Web3.to_checksum_address(self.account.address)
+            bnb_balance = self.web3.eth.get_balance(checksum_address)
+            bnb_formatted = self.web3.from_wei(bnb_balance, 'ether')
+            self.log(f"💰 BNB баланс: {bnb_formatted:.6f}", "SUCCESS")
+        except Exception as e:
+            self.log(f"❌ Ошибка получения BNB баланса: {e}", "ERROR")
+        
+        # PLEX ONE баланс
+        try:
+            self.log(f"🔍 Проверяем токен: PLEX ONE ({CONTRACTS['PLEX_ONE']})", "INFO")
+            plex_checksum = Web3.to_checksum_address(CONTRACTS['PLEX_ONE'])
+            contract_code = self.web3.eth.get_code(plex_checksum)
+            if contract_code and contract_code != b'':
+                plex_contract = self.web3.eth.contract(address=plex_checksum, abi=ERC20_ABI)
+                plex_balance_raw = plex_contract.functions.balanceOf(checksum_address).call()
+                plex_decimals = plex_contract.functions.decimals().call()
+                plex_balance = plex_balance_raw / (10 ** plex_decimals)
+                self.log(f"✅ Баланс PLEX ONE: {plex_balance:.6f}", "SUCCESS")
+            else:
+                self.log(f"❌ Контракт PLEX ONE не найден", "ERROR")
+        except Exception as e:
+            self.log(f"❌ Ошибка получения PLEX ONE баланса: {e}", "ERROR")
+        
+        # USDT баланс
+        try:
+            self.log(f"🔍 Проверяем токен: USDT ({CONTRACTS['USDT']})", "INFO")
+            usdt_checksum = Web3.to_checksum_address(CONTRACTS['USDT'])
+            contract_code = self.web3.eth.get_code(usdt_checksum)
+            if contract_code and contract_code != b'':
+                usdt_contract = self.web3.eth.contract(address=usdt_checksum, abi=ERC20_ABI)
+                usdt_balance_raw = usdt_contract.functions.balanceOf(checksum_address).call()
+                usdt_decimals = usdt_contract.functions.decimals().call()
+                usdt_balance = usdt_balance_raw / (10 ** usdt_decimals)
+                self.log(f"✅ Баланс USDT: {usdt_balance:.6f}", "SUCCESS")
+            else:
+                self.log(f"❌ Контракт USDT не найден", "ERROR")
+        except Exception as e:
+            self.log(f"❌ Ошибка получения USDT баланса: {e}", "ERROR")
+        
+        self.log("🔍 === КОНЕЦ ДИАГНОСТИКИ ===", "INFO")
             
     def _update_balance_display(self, balances: dict):
         """Обновление отображения балансов"""

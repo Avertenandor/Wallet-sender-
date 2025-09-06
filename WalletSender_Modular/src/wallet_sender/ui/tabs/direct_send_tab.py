@@ -224,24 +224,37 @@ class DirectSendTab(BaseTab):
             
         try:
             if self.seed_radio.isChecked():
-                # Обработка SEED фразы
-                if Mnemonic is None:
-                    QMessageBox.critical(self, "Ошибка", "Библиотека mnemonic не установлена!")
-                    return
-                    
-                words = wallet_data.split()
-                if len(words) not in [12, 24]:
-                    QMessageBox.warning(self, "Ошибка", "SEED фраза должна содержать 12 или 24 слова!")
-                    return
-                    
-                mnemo = Mnemonic("english")
-                if not mnemo.check(wallet_data):
-                    QMessageBox.warning(self, "Ошибка", "Неверная SEED фраза!")
-                    return
-                    
-                seed = mnemo.to_seed(wallet_data)
-                private_key = seed[:32].hex()
-                self.account = Account.from_key(private_key)
+                # SEED фраза — корректная деривация по BIP44 (m/44'/60'/0'/0/0)
+                account_path = "m/44'/60'/0'/0/0"
+                created = False
+                if hasattr(Account, 'from_mnemonic'):
+                    try:
+                        self.account = Account.from_mnemonic(wallet_data, account_path=account_path)  # type: ignore[arg-type]
+                        created = True
+                    except Exception:
+                        created = False
+                if not created:
+                    if Mnemonic is None:
+                        QMessageBox.critical(self, "Ошибка", "Для SEED требуется библиотека mnemonic. Либо введите приватный ключ.")
+                        return
+                    try:
+                        from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes  # type: ignore[import]
+                        words = wallet_data.split()
+                        if len(words) not in [12, 24]:
+                            QMessageBox.warning(self, "Ошибка", "SEED фраза должна содержать 12 или 24 слова!")
+                            return
+                        mnemo = Mnemonic("english")
+                        if not mnemo.check(wallet_data):
+                            QMessageBox.warning(self, "Ошибка", "Неверная SEED фраза!")
+                            return
+                        seed_bytes = Bip39SeedGenerator(wallet_data).Generate()
+                        bip44_ctx = Bip44.FromSeed(seed_bytes, Bip44Coins.ETHEREUM).Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
+                        private_key = bip44_ctx.PrivateKey().Raw().ToHex()
+                        self.account = Account.from_key(private_key)
+                        created = True
+                    except Exception as e:
+                        QMessageBox.critical(self, "Ошибка", f"Не удалось создать кошелек из SEED:\n{e}")
+                        return
             else:
                 # Обработка приватного ключа
                 private_key = wallet_data
