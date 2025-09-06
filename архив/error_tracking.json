@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "created": "2025-08-15T10:00:00Z",
+    "file": "WalletSender.py",
+    "total_errors": 0,
+    "fixed_errors": 0,
+    "progress": 0.0,
+    "last_updated": "2025-08-15T10:00:00Z"
+  },
+  "errors": {
+    "critical": [],
+    "high": [],
+    "medium": [],
+    "low": []
+  },
+  "categories": {
+    "critical": ["reportArgumentType", "reportUndefinedVariable", "reportAttributeAccessIssue"],
+    "high": ["reportRedeclaration"],
+    "medium": ["reportUnknownArgumentType", "reportUnknownMemberType"],
+    "low": ["reportOptionalMemberAccess", "reportUnknownVariableType"]
+  }
+}

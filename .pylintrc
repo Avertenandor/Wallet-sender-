@@ -1,0 +1,26 @@
+[MASTER]
+# Отключаем все проверки Pylint
+disable=all
+
+[MESSAGES CONTROL]
+# Отключаем ВСЕ сообщения
+disable=all
+
+[REPORTS]
+# Отключаем все отчеты
+reports=no
+score=no
+
+[BASIC]
+# Не проверяем имена
+good-names=i,j,k,ex,Run,_,a,b,c,d,e,f,g,h,x,y,z,w,pk,mn,tx,w3
+
+[FORMAT]
+# Максимальная длина строки
+max-line-length=200
+
+[TYPECHECK]
+# Игнорируем все проблемы с типами
+ignored-modules=*
+ignored-classes=*
+generated-members=*

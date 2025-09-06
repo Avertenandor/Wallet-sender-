@@ -1,0 +1,55 @@
+{
+    "network": "bsc_mainnet",
+    "rpc_urls": {
+        "bsc_mainnet": "https://bsc-dataseed.binance.org/",
+        "bsc_testnet": "https://data-seed-prebsc-1-s1.binance.org:8545/"
+    },
+    "gas_settings": {
+        "default_gas_price": 5,
+        "default_gas_limit": 100000,
+        "max_gas_price": 50
+    },
+    "tokens": {
+        "PLEX_ONE": "0xdf179b6cadbc61ffd86a3d2e55f6d6e083ade6c1",
+        "USDT": "0x55d398326f99059ff775485246999027b3197955",
+        "WBNB": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+    },
+    "pancakeswap_router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+    "bscscan_api_keys": [
+        "RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH",
+        "U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ",
+        "RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1"
+    ],
+    "etherscan_api_keys": [
+        "RF1Q8SCFHFD1EVAP5A4WCMIM4DREA7UNUH",
+        "U89HXHR9Y26CHMWAA9JUZ17YK2AAXS65CZ",
+        "RAI3FTD9W53JPYZ2AHW8IBH9BXUC71NRH1"
+    ],
+    "api_rate_limit": 5,
+    "rotate_api_keys": true,
+    "ui": {
+        "window_width": 1400,
+        "window_height": 900,
+        "theme": "dark",
+        "language": "ru"
+    },
+    "logging": {
+        "level": "INFO",
+        "file": "wallet_sender.log",
+        "max_size": 10485760,
+        "backup_count": 5
+    },
+    "database": {
+        "url": "sqlite:///wallet_sender.db",
+        "echo": false
+    },
+    "rewards": {
+        "enabled": false,
+        "min_amount": 0.01,
+        "reward_percentage": 1.0
+    },
+    "security": {
+        "encrypt_keys": true,
+        "auto_lock_minutes": 30
+    }
+}

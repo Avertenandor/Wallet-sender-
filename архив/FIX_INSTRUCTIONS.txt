@@ -1,0 +1,29 @@
+"""
+ИНСТРУКЦИЯ ПО ИСПРАВЛЕНИЮ ОШИБКИ НА СТРОКЕ 1522
+
+ПРОБЛЕМА:
+- Строка 1522: header.setSectionResizeMode(0)
+- Ошибка: Literal[0] нельзя присвоить параметру mode типа ResizeMode
+
+РЕШЕНИЕ:
+В начале файла уже определена константа:
+STRETCH_MODE = QtWidgets.QHeaderView.ResizeMode(0)
+
+Нужно заменить все вызовы вида:
+header.setSectionResizeMode(0)
+на:
+header.setSectionResizeMode(STRETCH_MODE)
+
+ШАГИ ИСПРАВЛЕНИЯ:
+1. Откройте WalletSender.py в текстовом редакторе
+2. Найдите строку 1522
+3. Замените: header.setSectionResizeMode(0)
+   На: header.setSectionResizeMode(STRETCH_MODE)
+4. Найдите все другие вызовы setSectionResizeMode(0) и замените их аналогично
+5. Сохраните файл
+
+АЛЬТЕРНАТИВНЫЙ ВАРИАНТ:
+Используйте поиск и замену (Ctrl+H в большинстве редакторов):
+Найти: .setSectionResizeMode(0)
+Заменить на: .setSectionResizeMode(STRETCH_MODE)
+"""
