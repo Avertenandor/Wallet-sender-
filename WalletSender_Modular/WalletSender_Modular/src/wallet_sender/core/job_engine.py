@@ -678,7 +678,7 @@ class AutoSellExecutor(BaseExecutor):
             logger.info(f"Токен: {token_address}, цель: {target_token}, проскальзывание: {slippage}%")
             
             # Адреса контрактов BSC (checksum format)
-            WBNB_ADDRESS = Web3.to_checksum_address("0xbb4CdB9CBd36B01bD1cBaEF95b79eFD60Bb44cBA")  # Wrapped BNB
+            WBNB_ADDRESS = Web3.to_checksum_address("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c")  # Wrapped BNB
             USDT_ADDRESS = Web3.to_checksum_address("0x55d398326f99059fF775485246999027B3197955")  # BSC USDT
             PANCAKE_ROUTER = Web3.to_checksum_address("0x10ED43C718714eb63d5aA57B78B54704E256024E")  # PancakeSwap V2
             

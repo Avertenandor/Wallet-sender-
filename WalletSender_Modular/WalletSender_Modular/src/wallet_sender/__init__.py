@@ -6,4 +6,4 @@ should import what they need explicitly, e.g. `from .config import Config`.
 Version of the WalletSender Modular application is exposed as `__version__`.
 """
 
-__version__ = "2.4.20"
+__version__ = "2.4.21"
