@@ -686,6 +686,8 @@ class AutoSellExecutor(BaseExecutor):
             for sell_num in range(total_sells):
                 for seller_idx, seller_key in enumerate(seller_keys):
                     if not self.wait_if_paused():
+                        # ИСПРАВЛЕНИЕ: Правильное завершение при паузе/отмене
+                        self.is_done = True
                         return
                     
                     try:
@@ -704,6 +706,15 @@ class AutoSellExecutor(BaseExecutor):
                             address=Web3.to_checksum_address(token_address), 
                             abi=ERC20_ABI
                         )
+                        
+                        # ИСПРАВЛЕНИЕ: Получаем правильные decimals из контракта
+                        try:
+                            token_decimals = token_contract.functions.decimals().call()
+                            logger.info(f"Токен {token_address[:10]}... имеет {token_decimals} decimals")
+                        except Exception as e:
+                            logger.warning(f"Не удалось получить decimals, используем 18: {e}")
+                            token_decimals = 18
+                        
                         token_balance = token_contract.functions.balanceOf(seller_address).call()
                         
                         if token_balance == 0:
@@ -744,115 +755,134 @@ class AutoSellExecutor(BaseExecutor):
                             logger.warning(f"Не удалось рассчитать amountOutMin, используем 0: {e}")
                             min_out = 0
                         
-                        # Резервируем nonce
-                        ticket = self.engine.nonce_manager.reserve(seller_address)
-                        nonce = ticket.nonce
-                        
-                        # Проверяем allowance для роутера
-                        allowance = token_contract.functions.allowance(seller_address, PANCAKE_ROUTER).call()
-                        
-                        if allowance < amount_to_sell:
-                            # Нужен approve
-                            logger.info(f"Выполняем approve для {seller_address[:10]}...")
-                            
-                            approve_tx = token_contract.functions.approve(
-                                PANCAKE_ROUTER, 
-                                amount_to_sell
-                            ).build_transaction({
-                                'from': seller_address,
-                                'nonce': nonce,
-                                'gas': 60000,
-                                'gasPrice': w3.to_wei(5, 'gwei')
-                            })
-                            
-                            # Подписываем и отправляем approve
-                            signed_approve = account.sign_transaction(approve_tx)
-                            approve_hash = w3.eth.send_raw_transaction(signed_approve.rawTransaction)
-                            
-                            # Ждем подтверждения approve
-                            approve_receipt = w3.eth.wait_for_transaction_receipt(approve_hash, timeout=60)
-                            if approve_receipt['status'] != 1:
-                                raise Exception("Approve транзакция не удалась")
-                            
-                            # Обновляем nonce для swap транзакции
-                            self.engine.nonce_manager.complete(ticket, approve_hash.hex())
+                        # ИСПРАВЛЕНИЕ: Защита nonce с try-finally
+                        ticket = None
+                        try:
+                            # Резервируем nonce
                             ticket = self.engine.nonce_manager.reserve(seller_address)
                             nonce = ticket.nonce
                         
-                        # Подготавливаем swap транзакцию
-                        router_abi = [
-                            {"name": "swapExactTokensForETH" if target_token.upper() == 'BNB' else "swapExactTokensForTokens",
-                             "type": "function", "stateMutability": "nonpayable",
-                             "inputs": [
-                                 {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
-                                 {"internalType": "uint256", "name": "amountOutMin", "type": "uint256"},
-                                 {"internalType": "address[]", "name": "path", "type": "address[]"},
-                                 {"internalType": "address", "name": "to", "type": "address"},
-                                 {"internalType": "uint256", "name": "deadline", "type": "uint256"}
-                             ], "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}]}
-                        ]
-                        
-                        swap_contract = w3.eth.contract(address=PANCAKE_ROUTER, abi=router_abi)
-                        
-                        # Deadline через 10 минут
-                        deadline = int(time.time()) + 600
-                        
-                        if target_token.upper() == 'BNB':
-                            swap_function = swap_contract.functions.swapExactTokensForETH(
-                                amount_to_sell,
-                                min_out,
-                                path,
-                                seller_address,
-                                deadline
+                            # Проверяем allowance для роутера
+                            allowance = token_contract.functions.allowance(seller_address, PANCAKE_ROUTER).call()
+                            
+                            if allowance < amount_to_sell:
+                                # Нужен approve
+                                logger.info(f"Выполняем approve для {seller_address[:10]}...")
+                                
+                                approve_tx = token_contract.functions.approve(
+                                    PANCAKE_ROUTER, 
+                                    amount_to_sell
+                                ).build_transaction({
+                                    'from': seller_address,
+                                    'nonce': nonce,
+                                    'gas': 60000,
+                                    'gasPrice': w3.to_wei(5, 'gwei')
+                                })
+                                
+                                # Подписываем и отправляем approve
+                                signed_approve = account.sign_transaction(approve_tx)
+                                approve_hash = w3.eth.send_raw_transaction(signed_approve.rawTransaction)
+                                
+                                # ИСПРАВЛЕНИЕ: Безопасное ожидание с обработкой таймаутов
+                                try:
+                                    approve_receipt = w3.eth.wait_for_transaction_receipt(approve_hash, timeout=60)
+                                    if approve_receipt['status'] != 1:
+                                        raise Exception("Approve транзакция не удалась")
+                                    logger.info(f"Approve подтвержден: {approve_hash.hex()[:10]}...")
+                                except Exception as approve_error:
+                                    # Обрабатываем ошибки approve отдельно
+                                    logger.error(f"Ошибка ожидания approve: {approve_error}")
+                                    raise Exception(f"Approve не подтвержден: {approve_error}")
+                                
+                                # Обновляем nonce для swap транзакции
+                                self.engine.nonce_manager.complete(ticket, approve_hash.hex())
+                                ticket = self.engine.nonce_manager.reserve(seller_address)
+                                nonce = ticket.nonce
+                            
+                            # Подготавливаем swap транзакцию
+                            router_abi = [
+                                {"name": "swapExactTokensForETH" if target_token.upper() == 'BNB' else "swapExactTokensForTokens",
+                                 "type": "function", "stateMutability": "nonpayable",
+                                 "inputs": [
+                                     {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
+                                     {"internalType": "uint256", "name": "amountOutMin", "type": "uint256"},
+                                     {"internalType": "address[]", "name": "path", "type": "address[]"},
+                                     {"internalType": "address", "name": "to", "type": "address"},
+                                     {"internalType": "uint256", "name": "deadline", "type": "uint256"}
+                                 ], "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}]}
+                            ]
+                            
+                            swap_contract = w3.eth.contract(address=PANCAKE_ROUTER, abi=router_abi)
+                            
+                            # Deadline через 10 минут
+                            deadline = int(time.time()) + 600
+                            
+                            if target_token.upper() == 'BNB':
+                                swap_function = swap_contract.functions.swapExactTokensForETH(
+                                    amount_to_sell,
+                                    min_out,
+                                    path,
+                                    seller_address,
+                                    deadline
+                                )
+                            else:
+                                swap_function = swap_contract.functions.swapExactTokensForTokens(
+                                    amount_to_sell,
+                                    min_out,
+                                    path,
+                                    seller_address,
+                                    deadline
+                                )
+                            
+                            # Создаем swap транзакцию
+                            swap_tx = swap_function.build_transaction({
+                                'from': seller_address,
+                                'nonce': nonce,
+                                'gas': 300000,
+                                'gasPrice': w3.to_wei(5, 'gwei')
+                            })
+                            
+                            # Подписываем и отправляем swap
+                            signed_swap = account.sign_transaction(swap_tx)
+                            tx_hash = w3.eth.send_raw_transaction(signed_swap.rawTransaction)
+                            
+                            # Подтверждаем использование nonce
+                            self.engine.nonce_manager.complete(ticket, tx_hash.hex())
+                            ticket = None  # Помечаем как использованный
+                            
+                            # Сохраняем транзакцию в БД
+                            self.engine.store.add_transaction(
+                                tx_hash=tx_hash.hex(),
+                                from_address=seller_address,
+                                to_address=PANCAKE_ROUTER,
+                                token_address=Web3.to_checksum_address(token_address),
+                                amount=amount_to_sell / (10 ** token_decimals),  # ИСПРАВЛЕНИЕ: Используем правильные decimals
+                                gas_price=swap_tx.get('gasPrice', 0),
+                                gas_limit=swap_tx.get('gas', 0),
+                                status='pending',
+                                type='sell',
+                                job_id=self.job_id
                             )
-                        else:
-                            swap_function = swap_contract.functions.swapExactTokensForTokens(
-                                amount_to_sell,
-                                min_out,
-                                path,
-                                seller_address,
-                                deadline
-                            )
-                        
-                        # Создаем swap транзакцию
-                        swap_tx = swap_function.build_transaction({
-                            'from': seller_address,
-                            'nonce': nonce,
-                            'gas': 300000,
-                            'gasPrice': w3.to_wei(5, 'gwei')
-                        })
-                        
-                        # Подписываем и отправляем swap
-                        signed_swap = account.sign_transaction(swap_tx)
-                        tx_hash = w3.eth.send_raw_transaction(signed_swap.rawTransaction)
-                        
-                        # Подтверждаем использование nonce
-                        self.engine.nonce_manager.complete(ticket, tx_hash.hex())
-                        
-                        # Сохраняем транзакцию в БД
-                        self.engine.store.add_transaction(
-                            tx_hash=tx_hash.hex(),
-                            from_address=seller_address,
-                            to_address=PANCAKE_ROUTER,
-                            token_address=Web3.to_checksum_address(token_address),
-                            amount=amount_to_sell / (10 ** 18),  # Конвертируем в читаемый формат
-                            gas_price=swap_tx.get('gasPrice', 0),
-                            gas_limit=swap_tx.get('gas', 0),
-                            status='pending',
-                            type='sell',
-                            job_id=self.job_id
-                        )
-                        
-                        self.done_count += 1
-                        logger.info(f"Продажа выполнена: {tx_hash.hex()[:10]}... для {seller_address[:10]}...")
+                            
+                            self.done_count += 1
+                            logger.info(f"Продажа выполнена: {tx_hash.hex()[:10]}... для {seller_address[:10]}...")
+                            
+                        except Exception as inner_error:
+                            # Ошибки внутри nonce блока
+                            logger.error(f"Ошибка в транзакции для {seller_address[:10]}: {inner_error}")
+                            raise inner_error
+                        finally:
+                            # ИСПРАВЛЕНИЕ: Гарантированное освобождение nonce при любых ошибках
+                            if ticket is not None:
+                                try:
+                                    self.engine.nonce_manager.fail(ticket, "Executor cleanup")
+                                    logger.warning(f"Nonce {ticket.nonce} освобожден при ошибке")
+                                except Exception as cleanup_error:
+                                    logger.error(f"Ошибка освобождения nonce: {cleanup_error}")
                         
                     except Exception as e:
                         logger.error(f"Ошибка продажи для {seller_address[:10] if 'seller_address' in locals() else 'unknown'}: {e}")
                         self.failed_count += 1
-                        
-                        # Отмечаем неудачу использования nonce
-                        if 'ticket' in locals():
-                            self.engine.nonce_manager.fail(ticket, str(e))
                     
                     # Обновляем прогресс
                     self.update_progress()
@@ -866,6 +896,8 @@ class AutoSellExecutor(BaseExecutor):
                     logger.info(f"Ожидание {interval} секунд до следующего цикла...")
                     for _ in range(interval):
                         if not self.wait_if_paused():
+                            # ИСПРАВЛЕНИЕ: Правильное завершение при паузе/отмене
+                            self.is_done = True
                             return
                         time.sleep(1)
             
