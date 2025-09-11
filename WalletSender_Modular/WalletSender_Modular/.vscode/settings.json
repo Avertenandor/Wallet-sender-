@@ -1,0 +1,14 @@
+{
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/src",
+    "${workspaceFolder}/WalletSender_Modular/src"
+  ],
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.stubPath": "${workspaceFolder}/typings",
+  "python.analysis.reportMissingTypeStubs": "none",
+  "python.envFile": "${workspaceFolder}/.env",
+  "python.autoComplete.extraPaths": [
+    "${workspaceFolder}/src"
+  ],
+  "python.defaultInterpreterPath": "python"
+}

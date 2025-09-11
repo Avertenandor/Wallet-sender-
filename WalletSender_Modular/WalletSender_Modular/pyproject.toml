@@ -1,0 +1,138 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools-scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "walletsender-modular"
+description = "WalletSender Modular - Advanced DeFi Wallet Management Tool"
+readme = "README.md"
+authors = [
+    {name = "WalletSender Team", email = "support@walletsender.dev"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Office/Business :: Financial",
+    "Operating System :: Microsoft :: Windows"
+]
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt5>=5.15.9",
+    "web3>=6.11.0", 
+    "requests>=2.31.0",
+    "aiohttp>=3.8.5",
+    "asyncio-throttle>=1.0.2",
+    "cryptography>=41.0.0",
+    "eth-account>=0.9.0",
+    "eth-utils>=2.2.0",
+    "pandas>=2.1.0",
+    "numpy>=1.24.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.1",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.12.0",
+    "qasync>=0.24.0",
+    "qdarkstyle>=3.2.3",
+    "pyinstaller>=5.13.2"
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-qt>=4.2.0",
+    "black>=23.7.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0",
+    "pre-commit>=3.3.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/walletsender/walletsender-modular"
+Repository = "https://github.com/walletsender/walletsender-modular.git"
+Documentation = "https://walletsender.readthedocs.io"
+Issues = "https://github.com/walletsender/walletsender-modular/issues"
+
+[project.scripts]
+walletsender = "wallet_sender.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+write_to = "src/wallet_sender/_version.py"
+
+[tool.black]
+line-length = 100
+target-version = ['py311', 'py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | архив
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+src_paths = ["src", "tests"]
+known_first_party = ["wallet_sender"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unreachable = true
+strict_equality = true
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = [
+    "PyQt5.*",
+    "web3.*",
+    "eth_account.*", 
+    "qdarkstyle.*",
+    "qasync.*"
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_paths = ["src"]
+addopts = [
+    "--strict-markers",
+    "--disable-warnings",
+    "--tb=short"
+]
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks tests as integration tests", 
+    "unit: marks tests as unit tests"
+]

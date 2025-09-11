@@ -1,0 +1,2 @@
+[console_scripts]
+walletsender = wallet_sender.__main__:main

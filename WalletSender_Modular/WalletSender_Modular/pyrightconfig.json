@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/vscode-pyright/schemas/pyrightconfig.schema.json",
+  "include": [
+    "src",
+    "main.py",
+    "run_app.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.git",
+    "**/node_modules",
+    ".venv",
+    "venv",
+    "архив",
+    "backup*",
+    "tests/__pycache__"
+  ],
+  "extraPaths": [
+    "./src"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "pythonVersion": "3.12",
+      "extraPaths": [
+        "./src"
+      ]
+    }
+  ],
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": "none",
+  "reportMissingImports": "warning",
+  "reportUnknownVariableType": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownArgumentType": "none",
+  "stubPath": "./typings",
+  "pythonVersion": "3.12"
+}
