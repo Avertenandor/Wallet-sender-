@@ -422,7 +422,9 @@ class DistributionExecutor(BaseExecutor):
             self.engine.store.update_job(self.job_id, total=self.total_count)
             
             # Получаем Web3 и аккаунт
-            w3 = self.engine.rpc_pool.get_web3()
+            w3 = self.engine.rpc_pool.get_client()
+            if not w3:
+                raise Exception("Не удалось получить Web3 соединение")
             account = Account.from_key(sender_key)
             sender_address = account.address
             
@@ -676,7 +678,7 @@ class AutoSellExecutor(BaseExecutor):
             logger.info(f"Токен: {token_address}, цель: {target_token}, проскальзывание: {slippage}%")
             
             # Адреса контрактов BSC (checksum format)
-            WBNB_ADDRESS = Web3.to_checksum_address("0xbb4CdB9CBd36B01bD1cBaEF95b79eFD60Bb44cB")
+            WBNB_ADDRESS = Web3.to_checksum_address("0xbb4CdB9CBd36B01bD1cBaEF95b79eFD60Bb44cBA")  # Wrapped BNB
             USDT_ADDRESS = Web3.to_checksum_address("0x55d398326f99059fF775485246999027B3197955")  # BSC USDT
             PANCAKE_ROUTER = Web3.to_checksum_address("0x10ED43C718714eb63d5aA57B78B54704E256024E")  # PancakeSwap V2
             
