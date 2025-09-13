@@ -31,3 +31,22 @@ backup_store/
 .pytest_cache/
 
 # Local temp folders
+
+# Archive files
+*.zip
+*.7z
+*.tar.gz
+*.rar
+
+# Large backup directories
+backup_*/
+_backups/
+OLD_VERSIONS/
+архив/
+отчеты/
+старые_версии/
+
+# Large data files
+*.csv
+*.json.bak
+*.db.bak
